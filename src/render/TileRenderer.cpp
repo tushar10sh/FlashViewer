@@ -248,7 +248,10 @@ bool TileRenderer::ensureTile(QOpenGLFunctions_4_1_Core& gl,
 
         // Band selection mismatch — schedule a refresh worker (only once)
         if (!tile->refreshing.load(std::memory_order_acquire)) {
-            auto ds = layer->dataset();
+            // SHARED ownership, not layer->dataset(): the worker outlives this call, and a
+            // layer removed while its decode is in flight would otherwise destroy the
+            // GDALDataset — and the mutex a worker may be blocked on — under that worker.
+            std::shared_ptr<RasterDataset> ds = layer->datasetPtr();
             if (ds) {
                 const auto bm   = layer->bandMapping();
                 const bool gray = bm.isGrayscale();
@@ -320,7 +323,9 @@ bool TileRenderer::ensureTile(QOpenGLFunctions_4_1_Core& gl,
 
     // Step 4: Empty — schedule initial decode
     tile->state = TileState::Loading;
-    auto ds = layer->dataset();
+    // Shared ownership for the same reason as the refresh path above: the decode runs on a
+    // pool thread and must keep the dataset alive for as long as it reads through it.
+    std::shared_ptr<RasterDataset> ds = layer->datasetPtr();
     if (!ds) { tile->state = TileState::Empty; return false; }
 
     const auto bm   = layer->bandMapping();
@@ -328,8 +333,7 @@ bool TileRenderer::ensureTile(QOpenGLFunctions_4_1_Core& gl,
     const int  zoom = key.zoom;
     const int  tx   = key.tx;
     const int  ty   = key.ty;
-    // Shared ownership so layer/ds don't disappear while worker runs
-    auto tile_ref = tile;  // shared_ptr copy keeps tile alive
+    auto tile_ref = tile;  // shared_ptr copy keeps the tile alive alongside the dataset
 
     m_pool.submit([ds, tile_ref, bm, gray, zoom, tx, ty,
                    eff_w, eff_h, project_wkt, resampling]() mutable {

@@ -20,6 +20,11 @@ public:
     LayerType type() const override { return LayerType::Raster; }
 
     RasterDataset*       dataset()     const { return m_ds.get(); }
+    // Shared ownership, for work that OUTLIVES the call — an async tile decode keeps the
+    // dataset alive until it finishes, so removing the layer mid-flight cannot pull the
+    // GDALDataset (and the mutex a worker may be blocked on) out from under a worker thread.
+    // Anything that reads and returns on the calling thread should use dataset().
+    std::shared_ptr<RasterDataset> datasetPtr() const { return m_ds; }
     const BandMapping&   bandMapping() const { return m_bands; }
     // The ONLY way to re-point a display channel at another band. It re-derives the 1/99
     // stretch of every channel whose band actually moved, so the image and the histogram
