@@ -62,6 +62,10 @@ add_executable(flashviewer_tests
     # Phase 19 — NetCDF/HDF combined multi-band layer (-separate band-stack VRT)
     test_band_stack.cpp
 
+    # Phase 26.5 — plot-panel scope bookkeeping and, chiefly, layer removal while a panel
+    # is open (FR-ANL-4/12). Partial T-PLOT-1.
+    test_plots.cpp
+
     # Phase 24 — coordinate-array georeferencing: fill-value masking, 1-D axis fit,
     # 2-D geolocation-array warp (FR-IO-14/FR-IO-15)
     test_geoloc.cpp
@@ -85,6 +89,12 @@ add_executable(flashviewer_tests
     # selection bookkeeping they pin lives in rebuildList, not in LayerGrouping's free
     # functions.
     "${CMAKE_SOURCE_DIR}/src/panels/LayerPanel.cpp"
+    # Both plot panels + the chart furniture they share: test_plots.cpp drives the real
+    # widgets, because the crash it pins lives in the removal path, not in a free function.
+    "${CMAKE_SOURCE_DIR}/src/plots/SpectralPlotPanel.cpp"
+    "${CMAKE_SOURCE_DIR}/src/plots/ScanPixProfilePanel.cpp"
+    "${CMAKE_SOURCE_DIR}/src/widgets/ChartTools.cpp"
+    "${CMAKE_SOURCE_DIR}/src/gis/PixelSampler.cpp"
     "${CMAKE_SOURCE_DIR}/src/widgets/SvgIconButton.cpp"
     "${CMAKE_SOURCE_DIR}/src/widgets/UiKit.cpp"
     "${CMAKE_SOURCE_DIR}/src/render/SyncGroup.cpp"
@@ -143,6 +153,7 @@ target_link_libraries(flashviewer_tests PRIVATE
     Qt6::OpenGL
     Qt6::OpenGLWidgets
     Qt6::Svg                             # UiKit's sync-badge glyph renderer
+    Qt6::Charts                          # the plot panels under test_plots.cpp
     spdlog::spdlog
     glm::glm
     nlohmann_json::nlohmann_json
