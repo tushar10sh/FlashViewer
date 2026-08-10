@@ -367,10 +367,22 @@ void clickAt(QTreeWidget* tree, const QPoint& p) {
     sendMouse(tree, QEvent::MouseButtonPress,   p, Qt::LeftButton, Qt::LeftButton);
     sendMouse(tree, QEvent::MouseButtonRelease, p, Qt::LeftButton, Qt::NoButton);
 }
-// Press on `from`, slide off to `to` with the button down, let go there.
-void pressDragRelease(QTreeWidget* tree, const QPoint& from, const QPoint& to) {
+// Press on `from`, let go over `to`.
+//
+// Deliberately NO intermediate button-held MouseMove. The tree enables drag, so a synthetic
+// move past the platform's start-drag distance takes QAbstractItemView::mouseMoveEvent into
+// startDrag() → QDrag::exec(), which spins a NESTED, MODAL event loop. The release this
+// helper sends next is never delivered — it is queued behind a loop that is waiting for it —
+// so the case hangs until CTest times it out. That is what the conda Linux lane hit; whether
+// a given Qt build starts the drag at all is a platform-plugin detail, which is why the same
+// code passed elsewhere.
+//
+// Nothing is lost: the behaviour under test is what the RELEASE resolves to
+// (LayerTreeWidget::selectionCommand, release + invalid index + m_press_on_row → NoUpdate).
+// m_press_on_row is set by the press and the release carries its own position, so the
+// intermediate move never entered the decision.
+void pressReleaseElsewhere(QTreeWidget* tree, const QPoint& from, const QPoint& to) {
     sendMouse(tree, QEvent::MouseButtonPress,   from, Qt::LeftButton, Qt::LeftButton);
-    sendMouse(tree, QEvent::MouseMove,          to,   Qt::NoButton,   Qt::LeftButton);
     sendMouse(tree, QEvent::MouseButtonRelease, to,   Qt::LeftButton, Qt::NoButton);
 }
 QAbstractButton* trashButton(LayerPanel& panel) {
@@ -416,7 +428,7 @@ TEST_CASE("TC-LYR-21 releasing away from a row keeps the selection and the trash
         REQUIRE(pane2->isSelected());
         REQUIRE(trash->isEnabled());
 
-        pressDragRelease(tree, tree->visualItemRect(pane2).center(), empty);
+        pressReleaseElsewhere(tree, tree->visualItemRect(pane2).center(), empty);
         CHECK(pane2->isSelected());
         CHECK(trash->isEnabled());
     }
@@ -425,7 +437,7 @@ TEST_CASE("TC-LYR-21 releasing away from a row keeps the selection and the trash
         clickAt(tree, tree->visualItemRect(rowA).center());
         REQUIRE(rowA->isSelected());
 
-        pressDragRelease(tree, tree->visualItemRect(rowA).center(), empty);
+        pressReleaseElsewhere(tree, tree->visualItemRect(rowA).center(), empty);
         CHECK(rowA->isSelected());
         CHECK(trash->isEnabled());
     }
@@ -436,7 +448,7 @@ TEST_CASE("TC-LYR-21 releasing away from a row keeps the selection and the trash
         pane2->setSelected(true);
         REQUIRE(tree->selectedItems().size() == 3);
 
-        pressDragRelease(tree, tree->visualItemRect(rowB).center(), empty);
+        pressReleaseElsewhere(tree, tree->visualItemRect(rowB).center(), empty);
         CHECK(tree->selectedItems().size() == 3);
         CHECK(trash->isEnabled());
     }
