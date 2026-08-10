@@ -6,6 +6,7 @@
 #include <QPixmap>
 #include "app/CoordAssignDialog.hpp"   // CoordAssignment (returned by the assign dialog)
 #include "app/Settings.hpp"
+#include "gis/InspectTypes.hpp"        // InspectPaneGroup — the shared inspect/profile scope
 #include "panels/NoDataWidget.hpp"
 #include "render/PaneLayoutMode.hpp"   // applyPaneLayoutMode / the View → Pane Layout radio
 #include <memory>
@@ -87,6 +88,11 @@ private:
     // cleared) — independent of which pane is currently active.
     void       updatePaneLegends();
     int        topLayerIndexInPane(uint64_t paneId) const;
+    // The layers one Scan/Pixel Profile Compute covers (Phase 26.5, FR-ANL-12): the active
+    // layer alone, or every visible raster across its whole sync group when its pane is
+    // synced. Same InspectPaneGroup shape as the inspect selection, so both plots and the
+    // Pixel Inspector share one notion of a scope.
+    QVector<InspectPaneGroup> buildProfileScope() const;
     // Pane gear-menu actions (Phase 6.1 / 6.2).
     void       closePane(MapCanvas* canvas);
     void       renamePane(MapCanvas* canvas);

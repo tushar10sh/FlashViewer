@@ -5,17 +5,19 @@
 #include "io/RasterDataset.hpp"
 #include "core/GeoTransform.hpp"
 #include "util/MathUtils.hpp"
-#include "widgets/UiKit.hpp"          // fvMakeSection
+#include "widgets/UiKit.hpp"          // fvMakeSection / FvTickCheckBox
 #include "widgets/ChartTools.hpp"     // FvChartView / FvChartToolbar — shared with the Spectral Plot
-#include "widgets/CurveStyle.hpp"     // fvCurveColor — the curve wears its layer's pane colour
+#include "widgets/CurveStyle.hpp"     // fvCurveColor / fvCurveDash — a curve names its pane
 #include "app/Settings.hpp"           // the persisted colour-scheme choice (FR-APP-6)
 #include "util/Logger.hpp"
 
 #include <QtCharts/QChart>
+#include <QtCharts/QLegend>
 #include <QtCharts/QLineSeries>
 #include <QtCharts/QValueAxis>
 
 #include <QApplication>
+#include <QComboBox>
 #include <QEvent>
 #include <QWidget>
 #include <QVBoxLayout>
@@ -24,9 +26,10 @@
 #include <QCheckBox>
 #include <QPushButton>
 #include <QLabel>
+#include <QStringList>
 
-#include <cmath>
 #include <algorithm>
+#include <cmath>
 #include <limits>
 #include <vector>
 
@@ -35,6 +38,7 @@ ScanPixProfilePanel::ScanPixProfilePanel(LayerManager* mgr, QWidget* parent)
     , m_mgr(mgr)
 {
     setupUi();
+    render();
 }
 
 void ScanPixProfilePanel::setRoi(double xmin, double ymin, double xmax, double ymax) {
@@ -97,11 +101,16 @@ void ScanPixProfilePanel::setupUi() {
     // (FR-APP-15). Left of Compute, because it changes what Compute will produce.
     m_mask_nodata = new FvTickCheckBox(tr("Mask No-Data"), central);
     m_mask_nodata->setChecked(true);
-    m_mask_nodata->setToolTip(tr("Exclude the layer's no-data value (and any non-finite "
+    m_mask_nodata->setToolTip(tr("Exclude each layer's own no-data value (and any non-finite "
                                  "samples) from the statistics. A row or column with nothing "
                                  "left is drawn as a gap."));
+    // Deliberately NO recompute here: the toggle states the rule the NEXT Compute will use.
+    // Re-running on the toggle re-read every layer of the plot on screen behind a single
+    // checkbox click — expensive, and it moved the numbers without the user asking for new
+    // ones. Compute is the only thing that reads a raster.
     connect(m_mask_nodata, &QCheckBox::toggled, this, [this] {
-        if (!m_last_profile.empty()) compute();   // re-answer with the new rule, don't wait
+        if (m_current && !m_current->curves.isEmpty())
+            m_status->setText(tr("Masking changed — press Compute to apply it."));
     });
     ctrlLay->addWidget(m_mask_nodata);
 
@@ -131,11 +140,45 @@ void ScanPixProfilePanel::setupUi() {
     toolbar->setSuggestedName(QStringLiteral("scan_pixel_profile"));
     toolbar->setCsvProvider([this] { return profileAsCsv(); });
     connect(toolbar, &FvChartToolbar::editLabelsRequested, this, &ScanPixProfilePanel::editLabels);
+
+    // The colour scheme is shared with the Spectral Plot through Settings, but it is offered
+    // here too: since Phase 26.5 a profile plot can hold many curves, so which scheme is in
+    // force matters — and reaching it only through the other panel would be a hidden control.
+    m_scheme = new QComboBox(central);
+    m_scheme->addItem(tr("Colour by pane"));
+    m_scheme->addItem(tr("Original palette"));
+    m_scheme->setCurrentIndex(Settings::instance().curveColorScheme() == 1 ? 1 : 0);
+    m_scheme->setToolTip(tr("Colour by pane: hue names the pane, lightness and line style name "
+                            "the layer within it. Original palette: ten fixed hues cycled by "
+                            "curve position, carrying no pane meaning."));
+    connect(m_scheme, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int i) {
+        Settings::instance().setCurveColorScheme(i);
+        render();
+    });
+    toolbar->addTrailingWidget(m_scheme);
+
+    // Off by default: Compute replaces the scope's curves. Ticking it grows the plot on
+    // screen instead, so several layers — or several statistics of one layer — can be
+    // compared (FR-ANL-12).
+    m_persist = new FvTickCheckBox(tr("Persist curves"), central);
+    m_persist->setToolTip(tr("Add the next Compute to the plot on screen instead of replacing "
+                             "it, so profiles of several layers can be compared"));
+    toolbar->addTrailingWidget(m_persist);
+
+    auto* clearBtn = new QPushButton(tr("Clear"), central);
+    clearBtn->setToolTip(tr("Discard the plot on screen"));
+    connect(clearBtn, &QPushButton::clicked, this, &ScanPixProfilePanel::clearCurrent);
+    toolbar->addTrailingWidget(clearBtn);
+
     auto* barLay = new QHBoxLayout();
     barLay->setContentsMargins(0, 0, 0, 0);
     barLay->addWidget(toolbar);
     barLay->addStretch(1);
     mainLay->addLayout(barLay);
+
+    m_status = new QLabel(central);
+    m_status->setWordWrap(true);
+    mainLay->addWidget(m_status);
 
     m_chart_view->setMinimumHeight(160);
 
@@ -148,9 +191,12 @@ void ScanPixProfilePanel::setupUi() {
     plotLay->addWidget(m_chart_view, 1);
     m_legend = new FvChartLegend(plotArea);
     connect(m_legend, &FvChartLegend::entryRenamed, this,
-            [this](const QString&, const QString& text) {
-                m_name_override = text;    // empty ⇒ back to the automatic name
-                if (!m_last_profile.empty()) compute();
+            [this](const QString& key, const QString& text) {
+                // Removing the key IS the reset: nothing stores an empty override, so the
+                // automatic label can never be shadowed by a blank one.
+                if (text.isEmpty()) m_name_override.remove(key);
+                else                m_name_override.insert(key, text);
+                render();
             });
     plotLay->addWidget(m_legend, 0);
     mainLay->addWidget(plotArea, 1);
@@ -159,22 +205,444 @@ void ScanPixProfilePanel::setupUi() {
     applyChartTheme();
 }
 
-QString ScanPixProfilePanel::seriesLabel() const {
-    return m_name_override.isEmpty() ? m_last_series : m_name_override;
+// ---------------------------------------------------------------------------
+// Labels
+// ---------------------------------------------------------------------------
+
+QString ScanPixProfilePanel::statName(const Curve& c) {
+    switch (c.stat) {
+        case 0:  return tr("Mean");
+        case 1:  return tr("Median");
+        case 2:  return tr("StdDev");
+        default: return tr("Q(p=%1)").arg(c.p, 0, 'f', 2);
+    }
+}
+
+QString ScanPixProfilePanel::curveKey(const Curve& c) {
+    return QStringLiteral("%1|%2|%3|%4")
+        .arg(c.layerId)
+        .arg(c.scanMode ? 1 : 0)
+        .arg(c.stat)
+        .arg(c.p, 0, 'f', 2);
+}
+
+QString ScanPixProfilePanel::curveLabel(const Curve& c) const {
+    const QString name = m_name_override.value(curveKey(c), c.layerName);
+    const bool multiPane = m_current && m_current->panes.size() > 1;
+    QString out;
+    if (multiPane && !c.paneLabel.isEmpty()) out += c.paneLabel + QStringLiteral(" / ");
+    out += name;
+    // Newline, not a space: the legend wraps the statistic onto its own line (FR-ANL-9), so a
+    // long filename and the mode/statistic never share one row. A rename replaces only the
+    // layer-name part, so the statistic still tells a Mean and a Median of one layer apart.
+    out += QStringLiteral("\n") + (c.scanMode ? tr("Scan") : tr("Pixel"))
+         + QStringLiteral(" — ") + statName(c);
+    return out;
+}
+
+// Name the plot after the scope that produced it, so the title always says WHOSE profiles are
+// drawn: one layer by name, one pane's merge by pane, a sync-group merge by the panes it spans.
+static QString buildProfileTitle(const QStringList& paneLabels, int curveCount,
+                                 const QString& soleLayerName, const QString& solePaneLabel) {
+    if (curveCount == 1)
+        return solePaneLabel.isEmpty()
+                   ? soleLayerName
+                   : ScanPixProfilePanel::tr("%1 — %2").arg(soleLayerName, solePaneLabel);
+    if (paneLabels.size() <= 1) {
+        const QString pane = paneLabels.isEmpty() ? QString() : paneLabels.front();
+        return pane.isEmpty()
+                   ? ScanPixProfilePanel::tr("%n profile(s)", "", curveCount)
+                   : ScanPixProfilePanel::tr("%1 — %n profile(s)", "", curveCount).arg(pane);
+    }
+    return ScanPixProfilePanel::tr("Synced %1 — %n profile(s)", "", curveCount)
+        .arg(paneLabels.join(QStringLiteral(", ")));
 }
 
 void ScanPixProfilePanel::editLabels() {
+    const bool scanMode = m_current && !m_current->curves.isEmpty()
+                              ? m_current->curves.front().scanMode
+                              : m_scan_radio->isChecked();
     const FvChartLabels defaults{
-        m_last_series.isEmpty() ? tr("Profile") : tr("Profile: %1").arg(m_last_series),
-        m_last_x_title.isEmpty() ? tr("Row") : m_last_x_title,
+        m_current && !m_current->title.isEmpty() ? tr("Profile: %1").arg(m_current->title)
+                                                 : tr("Profile"),
+        scanMode ? tr("Row") : tr("Column"),
         tr("Value") };
-    FvChartLabels labels{ m_title_override, m_x_override, m_y_override };
+    FvChartLabels labels{ m_current ? m_current->titleOverride : QString(),
+                          m_x_override, m_y_override };
     if (!fvEditChartLabels(this, labels, defaults)) return;
-    m_title_override = labels.title;
-    m_x_override     = labels.xTitle;
-    m_y_override     = labels.yTitle;
-    if (!m_last_profile.empty()) compute();
+    if (m_current) m_current->titleOverride = labels.title;
+    m_x_override = labels.xTitle;
+    m_y_override = labels.yTitle;
+    render();
 }
+
+// ---------------------------------------------------------------------------
+// Export
+// ---------------------------------------------------------------------------
+
+QString ScanPixProfilePanel::profileAsCsv() const {
+    if (!m_current || m_current->curves.isEmpty()) return {};
+
+    // Merged curves can differ in length (layers of different size profiled together), so the
+    // table is as long as the longest and short curves end early.
+    size_t rows = 0;
+    for (const Curve& c : m_current->curves) rows = std::max(rows, c.values.size());
+    if (rows == 0) return {};
+
+    auto quote = [](QString s) {
+        s.replace('"', QStringLiteral("\"\""));
+        return '"' + s + '"';
+    };
+
+    const bool scanMode = m_current->curves.front().scanMode;
+    // Exports carry what is ON SCREEN, label edits included. The legend's newline is flattened
+    // to a space; a CSV field cannot hold one without quoting games at the far end.
+    QString out;
+    out += "# " + (m_current->titleOverride.isEmpty() ? m_current->title
+                                                      : m_current->titleOverride) + "\n";
+    out += (m_x_override.isEmpty() ? (scanMode ? tr("Row") : tr("Column")) : m_x_override);
+    for (const Curve& c : m_current->curves)
+        out += "," + quote(QString(curveLabel(c)).replace(QLatin1Char('\n'), QLatin1Char(' ')));
+    out += "\n";
+
+    for (size_t i = 0; i < rows; ++i) {
+        out += QString::number(i);
+        for (const Curve& c : m_current->curves) {
+            out += ",";
+            // Past the end, or a line masked out entirely (FR-ANL-11): an EMPTY field. Writing
+            // "nan" would be read back as a value by most spreadsheet importers.
+            if (i < c.values.size() && !std::isnan(c.values[i]))
+                out += QString::number(c.values[i], 'g', 10);
+        }
+        out += "\n";
+    }
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// Computation
+// ---------------------------------------------------------------------------
+
+bool ScanPixProfilePanel::profileFor(RasterLayer* rl, const Curve& spec,
+                                     std::vector<double>& out) const {
+    out.clear();
+    if (!rl) return false;
+    auto* ds = rl->dataset();
+    if (!ds) return false;
+
+    // Determine pixel region to read
+    int xoff = 0, yoff = 0, xsize = ds->width(), ysize = ds->height();
+
+    if (m_has_roi) {
+        // Convert geo ROI to pixel coords
+        auto gt = ds->geoTransform();
+        auto p1 = gt.geoToPixel(m_roi_xmin, m_roi_ymax); // top-left (ymax = northern edge)
+        auto p2 = gt.geoToPixel(m_roi_xmax, m_roi_ymin); // bottom-right
+
+        int px1 = static_cast<int>(std::floor(std::min(p1.x, p2.x)));
+        int py1 = static_cast<int>(std::floor(std::min(p1.y, p2.y)));
+        int px2 = static_cast<int>(std::ceil(std::max(p1.x, p2.x)));
+        int py2 = static_cast<int>(std::ceil(std::max(p1.y, p2.y)));
+
+        xoff  = std::max(0, px1);
+        yoff  = std::max(0, py1);
+        xsize = std::min(ds->width(),  px2) - xoff;
+        ysize = std::min(ds->height(), py2) - yoff;
+
+        if (xsize <= 0 || ysize <= 0) return false;
+    }
+
+    // Cap at 1024 pixels in each dimension
+    const int kMaxSize = 1024;
+    int dstW = std::min(xsize, kMaxSize);
+    int dstH = std::min(ysize, kMaxSize);
+
+    // Read first band only for profile
+    TileBuffer buf = ds->readRegion(xoff, yoff, xsize, ysize, dstW, dstH, {1});
+    if (!buf.isValid()) return false;
+
+    const float* ptr = buf.bandPtr(0);
+    const int W = buf.width;
+    const int H = buf.height;
+    if (!ptr || W <= 0 || H <= 0) return false;
+
+    // No-data masking (FR-ANL-11). Without it a scene padded with -9999 (or 0, or 65535) drags
+    // every aggregate toward the sentinel, and the statistic describes the padding rather than
+    // the data. THIS layer's own no-data — a merged plot (FR-ANL-12) masks per layer, since two
+    // panes' rasters routinely declare different sentinels. Same relative tolerance as
+    // fvSamplePixelBands, so the profile and the Pixel Inspector agree on what counts as
+    // no-data. Non-finite samples are dropped whenever masking is on, declared value or not —
+    // a NaN poisons mean and stddev outright.
+    const bool  mask   = m_mask_nodata && m_mask_nodata->isChecked();
+    const bool  has_nd = mask && rl->hasNoData();
+    const float nd_v   = has_nd ? rl->noDataValue() : 0.0f;
+    const float nd_eps = has_nd ? std::max(std::abs(nd_v) * 1e-5f, 1e-10f) : 0.0f;
+    auto keep = [&](float v) {
+        if (!mask) return true;
+        if (!std::isfinite(v)) return false;
+        return !(has_nd && std::abs(v - nd_v) < nd_eps);
+    };
+
+    const float p = static_cast<float>(spec.p);
+    // A line with nothing left after masking has no statistic. It yields NaN rather than 0 —
+    // which would be a value, and would be plotted — and the chart draws a gap there.
+    // `line`, not `data` — QWidget has a `data` member, and the shadow is a warning.
+    auto aggregate = [&](const std::vector<float>& line) -> double {
+        if (line.empty()) return std::numeric_limits<double>::quiet_NaN();
+        switch (spec.stat) {
+            case 0:  return static_cast<double>(MathUtils::mean(line));
+            case 1:  return static_cast<double>(MathUtils::median(line));
+            case 2:  return static_cast<double>(MathUtils::stddev(line));
+            default: return static_cast<double>(MathUtils::quantile(line, p));
+        }
+    };
+
+    out.reserve(static_cast<size_t>(spec.scanMode ? H : W));
+    int masked_lines = 0;
+    if (spec.scanMode) {
+        // For each row, compute statistic across all columns
+        for (int row = 0; row < H; ++row) {
+            std::vector<float> rowData;
+            rowData.reserve(static_cast<size_t>(W));
+            for (int col = 0; col < W; ++col) {
+                const float v = ptr[static_cast<size_t>(row * W + col)];
+                if (keep(v)) rowData.push_back(v);
+            }
+            if (rowData.empty()) ++masked_lines;
+            out.push_back(aggregate(rowData));
+        }
+    } else {
+        // For each column, compute statistic across all rows
+        for (int col = 0; col < W; ++col) {
+            std::vector<float> colData;
+            colData.reserve(static_cast<size_t>(H));
+            for (int row = 0; row < H; ++row) {
+                const float v = ptr[static_cast<size_t>(row * W + col)];
+                if (keep(v)) colData.push_back(v);
+            }
+            if (colData.empty()) ++masked_lines;
+            out.push_back(aggregate(colData));
+        }
+    }
+    if (masked_lines > 0)
+        FV_INFO("Scan/Pixel Profile: {} of {} lines of '{}' are entirely no-data", masked_lines,
+                out.size(), rl->name().toStdString());
+    return !out.empty();
+}
+
+void ScanPixProfilePanel::compute() {
+    if (!m_mgr) return;
+
+    // The scope: MainWindow decides, because only it knows whether the active layer's pane is
+    // synced. Without a resolver (or when it declines) the active layer alone is profiled,
+    // which is what this panel always did.
+    QVector<InspectPaneGroup> scope = m_scope ? m_scope() : QVector<InspectPaneGroup>{};
+    if (scope.isEmpty()) {
+        auto l = m_mgr->activeLayer();
+        if (!l || l->type() != LayerType::Raster) {
+            m_status->setText(tr("No raster layer is active."));
+            return;
+        }
+        InspectPaneGroup g;
+        g.paneId    = l->paneId();
+        g.paneColor = m_pane_color ? m_pane_color(g.paneId) : QColor();
+        g.layers.push_back(InspectLayerEntry{ l->name(), static_cast<RasterLayer*>(l.get()) });
+        scope.push_back(std::move(g));
+    }
+
+    // The statistic every curve of THIS Compute is computed with; it is stored on each curve,
+    // so a later re-run reproduces it rather than whatever the radios say by then.
+    Curve spec;
+    spec.scanMode = m_scan_radio->isChecked();
+    spec.stat     = m_mean_radio->isChecked()   ? 0
+                  : m_median_radio->isChecked() ? 1
+                  : m_stddev_radio->isChecked() ? 2
+                                                : 3;
+    spec.p        = m_p_spin->value();
+
+    // Profile everything FIRST. A pane whose layers are all unreadable contributes no curve,
+    // so it must not appear in the title or widen the scope either.
+    struct Hit {
+        quint64             paneId{0};
+        QString             paneLabel;
+        QColor              paneColor;
+        QString             layerName;
+        quint64             layerId{0};
+        std::vector<double> values;
+    };
+    std::vector<Hit> hits;
+    QSet<quint64>    panes;
+
+    for (const auto& g : scope) {
+        bool any = false;
+        for (const auto& e : g.layers) {
+            if (!e.layer) continue;
+            std::vector<double> vals;
+            if (!profileFor(e.layer, spec, vals)) continue;
+            hits.push_back(Hit{g.paneId, g.paneLabel, g.paneColor, e.name,
+                               e.layer->layerId(), std::move(vals)});
+            any = true;
+        }
+        if (any) panes.insert(g.paneId);
+    }
+
+    if (hits.empty()) {
+        // Nothing to profile — say so without destroying what the user is already looking at.
+        m_status->setText(tr("Nothing to profile in the current selection."));
+        return;
+    }
+
+    QSet<quint64> members;
+    for (const auto& h : hits) members.insert(h.layerId);
+
+    const bool persist = m_persist && m_persist->isChecked();
+
+    PlotPtr plot;
+    if (persist && m_current) {
+        // Grow the plot on screen: the newly profiled layers join its scope, so activating any
+        // of them brings the comparison back up.
+        plot = m_current;
+        for (quint64 id : members)
+            if (m_by_layer.value(id) != plot) detachLayer(id);
+        plot->layers.unite(members);
+        plot->panes.unite(panes);
+        for (quint64 id : members) m_by_layer.insert(id, plot);
+    } else {
+        // Re-use the plot when the scope is identical; otherwise the profiled layers leave
+        // their old plots and form a new one — the most recent Compute owns them.
+        for (const auto& p : m_plots)
+            if (p->layers == members && p->panes == panes) { plot = p; break; }
+        if (!plot) {
+            for (quint64 id : members) detachLayer(id);
+            plot = std::make_shared<Plot>();
+            plot->layers    = members;
+            plot->panes     = panes;
+            // A scope spanning panes can only have come from the sync group — the resolver
+            // returns one pane otherwise — so this is the merge that a later unsync invalidates.
+            plot->syncMerge = panes.size() > 1;
+            m_plots.push_back(plot);
+            for (quint64 id : members) m_by_layer.insert(id, plot);
+        }
+        plot->curves.clear();
+    }
+
+    for (auto& h : hits) {
+        Curve c   = spec;              // mode / statistic / p
+        c.layerId   = h.layerId;
+        c.paneId    = h.paneId;
+        c.paneColor = h.paneColor;
+        c.paneLabel = h.paneLabel;     // shown only while the plot spans >1 pane
+        c.layerName = h.layerName;
+        c.values    = std::move(h.values);
+        // Re-running the same layer with the same statistic REPLACES its curve rather than
+        // stacking a duplicate on top of itself — otherwise persisting through a Mask No-Data
+        // toggle would draw the same profile twice.
+        const QString key = curveKey(c);
+        bool replaced = false;
+        for (Curve& e : plot->curves)
+            if (curveKey(e) == key) { e = c; replaced = true; break; }
+        if (!replaced) plot->curves.push_back(std::move(c));
+    }
+
+    // Title from the FINAL contents, not just this Compute's: with Persist on the plot may
+    // already span panes and layers this gesture never touched.
+    QStringList paneLabels;
+    for (const Curve& c : plot->curves)
+        if (!c.paneLabel.isEmpty() && !paneLabels.contains(c.paneLabel))
+            paneLabels.push_back(c.paneLabel);
+    plot->title = buildProfileTitle(paneLabels, plot->curves.size(),
+                                    plot->curves.front().layerName,
+                                    plot->curves.front().paneLabel);
+
+    m_current = plot;
+    render();
+}
+
+// ---------------------------------------------------------------------------
+// Scope bookkeeping — the Spectral Plot's, applied to profiles (FR-ANL-12)
+// ---------------------------------------------------------------------------
+
+// By value on purpose: `clearCurrent` passes `m_current`, and the reset below would otherwise
+// destroy the very shared_ptr the parameter aliases.
+void ScanPixProfilePanel::erasePlot(PlotPtr p) {
+    if (!p) return;
+    for (quint64 id : p->layers) {
+        auto it = m_by_layer.find(id);
+        if (it != m_by_layer.end() && *it == p) m_by_layer.erase(it);
+    }
+    m_plots.erase(std::remove(m_plots.begin(), m_plots.end(), p), m_plots.end());
+    if (m_current == p) m_current.reset();
+}
+
+void ScanPixProfilePanel::detachLayer(quint64 layerId) {
+    auto it = m_by_layer.find(layerId);
+    if (it == m_by_layer.end()) return;
+    PlotPtr p = *it;
+    m_by_layer.erase(it);
+    p->layers.remove(layerId);
+    p->curves.erase(std::remove_if(p->curves.begin(), p->curves.end(),
+                                   [layerId](const Curve& c) { return c.layerId == layerId; }),
+                    p->curves.end());
+    // A plot with no members left is unreachable — nothing can activate it again.
+    if (p->layers.isEmpty()) erasePlot(p);
+}
+
+void ScanPixProfilePanel::showLayerPlot(int layerIndex) {
+    m_current.reset();
+    if (m_mgr) {
+        auto l = m_mgr->layerAt(layerIndex);
+        if (l && l->type() == LayerType::Raster) {
+            auto it = m_by_layer.constFind(static_cast<RasterLayer*>(l.get())->layerId());
+            if (it != m_by_layer.constEnd()) m_current = *it;
+        }
+    }
+    render();
+}
+
+void ScanPixProfilePanel::forgetLayer(quint64 layerId) {
+    if (!m_by_layer.contains(layerId)) return;
+    detachLayer(layerId);
+    render();
+}
+
+void ScanPixProfilePanel::dropMergedPlotsOutside(const QSet<quint64>& syncedPanes) {
+    // Only a SYNC merge can be invalidated by a sync change: a single-pane plot is still exactly
+    // what its pane shows, and a cross-pane plot the user assembled with Persist is a comparison
+    // they asked for, not a statement about panes moving together. This runs on every sync-role
+    // change (including a master rename/recolour), so it must keep merges still fully synced.
+    std::vector<PlotPtr> doomed;
+    for (const auto& p : m_plots) {
+        if (!p->syncMerge || p->panes.size() < 2) continue;
+        for (quint64 pid : p->panes)
+            if (!syncedPanes.contains(pid)) { doomed.push_back(p); break; }
+    }
+    if (doomed.empty()) return;
+    for (const auto& p : doomed) erasePlot(p);
+    render();
+}
+
+void ScanPixProfilePanel::forgetAll() {
+    if (m_plots.empty() && m_by_layer.isEmpty() && m_name_override.isEmpty()
+        && m_x_override.isEmpty() && m_y_override.isEmpty())
+        return;                      // nothing to drop, and no reason to force a repaint
+    m_plots.clear();
+    m_by_layer.clear();
+    m_current.reset();
+    m_name_override.clear();         // label edits belong to the plots they annotated
+    m_x_override.clear();
+    m_y_override.clear();
+    render();
+}
+
+void ScanPixProfilePanel::clearCurrent() {
+    if (!m_current) return;
+    erasePlot(m_current);
+    render();
+}
+
+// ---------------------------------------------------------------------------
+// Drawing
+// ---------------------------------------------------------------------------
 
 void ScanPixProfilePanel::applyChartTheme() {
     if (!m_chart) return;
@@ -202,245 +670,140 @@ void ScanPixProfilePanel::applyChartTheme() {
     }
 }
 
-void ScanPixProfilePanel::changeEvent(QEvent* e) {
-    // Recompute rather than re-tint: the curve colour comes from a per-theme lightness band
-    // (fvCurveColor), so the series itself has to be restyled too.
-    if (e->type() == QEvent::PaletteChange || e->type() == QEvent::StyleChange) {
-        if (m_last_profile.empty()) applyChartTheme();
-        else                        compute();
-    }
-    QWidget::changeEvent(e);
-}
+void ScanPixProfilePanel::render() {
+    if (!m_chart) return;
 
-QString ScanPixProfilePanel::profileAsCsv() const {
-    if (m_last_profile.empty()) return {};
-    QString series = seriesLabel();
-    series.replace('"', QStringLiteral("\"\""));
-    // Exports carry what is on screen, label edits included.
-    QString out = "# " + (m_title_override.isEmpty() ? series : m_title_override) + "\n";
-    out += (m_x_override.isEmpty() ? m_last_x_title : m_x_override) + ","
-         + (m_y_override.isEmpty() ? tr("Value")    : m_y_override) + "\n";
-    for (size_t i = 0; i < m_last_profile.size(); ++i) {
-        out += QString::number(i) + ",";
-        // A line masked out entirely (FR-ANL-11) gets an EMPTY field, for the same reason the
-        // Spectral CSV leaves no-data blank: "nan" is read back as a value by most spreadsheet
-        // importers.
-        if (!std::isnan(m_last_profile[i])) out += QString::number(m_last_profile[i], 'g', 10);
-        out += "\n";
-    }
-    return out;
-}
-
-void ScanPixProfilePanel::compute() {
-    if (!m_mgr) return;
-
-    // Get active raster layer
-    auto layerPtr = m_mgr->activeLayer();
-    if (!layerPtr || layerPtr->type() != LayerType::Raster) return;
-
-    auto* rl = static_cast<RasterLayer*>(layerPtr.get());
-    auto* ds = rl->dataset();
-    if (!ds) return;
-
-    // Determine pixel region to read
-    int xoff = 0, yoff = 0, xsize = ds->width(), ysize = ds->height();
-
-    if (m_has_roi) {
-        // Convert geo ROI to pixel coords
-        auto gt = ds->geoTransform();
-        auto p1 = gt.geoToPixel(m_roi_xmin, m_roi_ymax); // top-left (ymax = northern edge)
-        auto p2 = gt.geoToPixel(m_roi_xmax, m_roi_ymin); // bottom-right
-
-        int px1 = static_cast<int>(std::floor(std::min(p1.x, p2.x)));
-        int py1 = static_cast<int>(std::floor(std::min(p1.y, p2.y)));
-        int px2 = static_cast<int>(std::ceil(std::max(p1.x, p2.x)));
-        int py2 = static_cast<int>(std::ceil(std::max(p1.y, p2.y)));
-
-        xoff  = std::max(0, px1);
-        yoff  = std::max(0, py1);
-        xsize = std::min(ds->width(),  px2) - xoff;
-        ysize = std::min(ds->height(), py2) - yoff;
-
-        if (xsize <= 0 || ysize <= 0) return;
-    }
-
-    // Cap at 1024 pixels in each dimension
-    const int kMaxSize = 1024;
-    int dstW = std::min(xsize, kMaxSize);
-    int dstH = std::min(ysize, kMaxSize);
-
-    // Read first band only for profile
-    TileBuffer buf = ds->readRegion(xoff, yoff, xsize, ysize, dstW, dstH, {1});
-    if (!buf.isValid()) return;
-
-    bool scanMode = m_scan_radio->isChecked();
-    bool useMean     = m_mean_radio->isChecked();
-    bool useMedian   = m_median_radio->isChecked();
-    bool useStddev   = m_stddev_radio->isChecked();
-    bool useQuantile = m_quantile_radio->isChecked();
-    float p = static_cast<float>(m_p_spin->value());
-
-    const float* ptr = buf.bandPtr(0);
-    int W = buf.width;
-    int H = buf.height;
-
-    // No-data masking (FR-ANL-11). Without it a scene padded with -9999 (or 0, or 65535)
-    // drags every aggregate toward the sentinel, and the statistic describes the padding
-    // rather than the data. Same relative tolerance as fvSamplePixelBands, so the profile and
-    // the Pixel Inspector agree on what counts as no-data. Non-finite samples are dropped
-    // whenever masking is on, declared value or not — a NaN poisons mean and stddev outright.
-    const bool  mask   = m_mask_nodata && m_mask_nodata->isChecked();
-    const bool  has_nd = mask && rl->hasNoData();
-    const float nd_v   = has_nd ? rl->noDataValue() : 0.0f;
-    const float nd_eps = has_nd ? std::max(std::abs(nd_v) * 1e-5f, 1e-10f) : 0.0f;
-    auto keep = [&](float v) {
-        if (!mask) return true;
-        if (!std::isfinite(v)) return false;
-        return !(has_nd && std::abs(v - nd_v) < nd_eps);
-    };
-
-    std::vector<double> profile;
-    profile.reserve(static_cast<size_t>(scanMode ? H : W));
-
-    // A line with nothing left after masking has no statistic. It yields NaN rather than 0 —
-    // which would be a value, and would be plotted — and the chart draws a gap there.
-    auto aggregate = [&](const std::vector<float>& data) -> double {
-        if (data.empty())     return std::numeric_limits<double>::quiet_NaN();
-        if (useMean)          return static_cast<double>(MathUtils::mean(data));
-        if (useMedian)        return static_cast<double>(MathUtils::median(data));
-        if (useStddev)        return static_cast<double>(MathUtils::stddev(data));
-        if (useQuantile)      return static_cast<double>(MathUtils::quantile(data, p));
-        return std::numeric_limits<double>::quiet_NaN();
-    };
-
-    int masked_lines = 0;
-    if (scanMode) {
-        // For each row, compute statistic across all columns
-        for (int row = 0; row < H; ++row) {
-            std::vector<float> rowData;
-            rowData.reserve(static_cast<size_t>(W));
-            for (int col = 0; col < W; ++col) {
-                const float v = ptr[static_cast<size_t>(row * W + col)];
-                if (keep(v)) rowData.push_back(v);
-            }
-            if (rowData.empty()) ++masked_lines;
-            profile.push_back(aggregate(rowData));
-        }
-    } else {
-        // For each column, compute statistic across all rows
-        for (int col = 0; col < W; ++col) {
-            std::vector<float> colData;
-            colData.reserve(static_cast<size_t>(H));
-            for (int row = 0; row < H; ++row) {
-                const float v = ptr[static_cast<size_t>(row * W + col)];
-                if (keep(v)) colData.push_back(v);
-            }
-            if (colData.empty()) ++masked_lines;
-            profile.push_back(aggregate(colData));
-        }
-    }
-    if (masked_lines > 0)
-        FV_INFO("Scan/Pixel Profile: {} of {} lines are entirely no-data", masked_lines,
-                profile.size());
-
-    // Build chart
     m_chart->removeAllSeries();
-    const auto axes = m_chart->axes();
-    for (auto* ax : axes) m_chart->removeAxis(ax);
+    const auto oldAxes = m_chart->axes();
+    for (auto* ax : oldAxes) m_chart->removeAxis(ax);
 
-    if (profile.empty()) {
-        // The axes were just removed, so the toolbar's captured home now names destroyed
-        // objects — drop it rather than leave home pointing at nothing.
-        m_last_profile.clear();
-        if (m_legend) m_legend->setEntries({});
-        if (m_chart_view) m_chart_view->captureHome();
-        return;
+    const bool haveCurves = m_current && !m_current->curves.isEmpty();
+
+    // Title: the plot's own scope when there is one, otherwise the layer the user just
+    // activated — a blank chart still has to name what it would show.
+    QString title;
+    if (haveCurves) {
+        // An override replaces the whole title, prefix included — a user who typed a title
+        // meant that title, not "Profile: " plus that title.
+        title = m_current->titleOverride.isEmpty() ? tr("Profile: %1").arg(m_current->title)
+                                                   : m_current->titleOverride;
+    } else if (m_mgr) {
+        auto l = m_mgr->activeLayer();
+        title = l ? tr("%1 — no profile computed").arg(l->name()) : tr("Profile");
+    } else {
+        title = tr("Profile");
     }
+    m_chart->setTitle(title);
 
-    auto* series = new QLineSeries();
-    QString statName;
-    if (useMean)          statName = tr("Mean");
-    else if (useMedian)   statName = tr("Median");
-    else if (useStddev)   statName = tr("StdDev");
-    else if (useQuantile) statName = QString(tr("Q(p=%1)")).arg(p, 0, 'f', 2);
-
-    QString modeName = scanMode ? tr("Scan") : tr("Pixel");
-    // `autoName` is what the label WOULD be; it is what the rename dialog offers to restore,
-    // so it is recorded separately from the possibly-overridden name actually displayed.
-    const QString autoName = QString("%1 - %2 - %3")
-                                 .arg(layerPtr->name())
-                                 .arg(modeName)
-                                 .arg(statName);
-    series->setName(m_name_override.isEmpty() ? autoName : m_name_override);
-
-    // The curve wears the pane colour of the layer it profiles (FR-ANL-8) — the only thing
-    // in this window that says which pane the numbers came from. Index 0, so it is the pane's
-    // colour exactly, matching a left-click curve in the Spectral Plot.
-    const bool isDark = QApplication::palette().window().color().lightness() < 128;
-    QColor pane = m_pane_color ? m_pane_color(layerPtr->paneId()) : QColor();
-    if (!pane.isValid()) pane = QApplication::palette().highlight().color();
-    // "Original palette" mode (FR-ANL-8) has nothing to distinguish here — a profile draws a
-    // single series — so it simply takes the palette's first hue instead of the pane's.
-    const QColor curveCol = Settings::instance().curveColorScheme() == 1
-                                ? QColor(0x1f, 0x77, 0xb4)
-                                : fvCurveColor(pane, 0, isDark);
-    QPen pen(curveCol);
-    pen.setWidth(2);
-    series->setPen(pen);
-
-    double yMin = std::numeric_limits<double>::max();
-    double yMax = std::numeric_limits<double>::lowest();
-    for (size_t i = 0; i < profile.size(); ++i) {
-        // A fully-masked line is a GAP, not a point at zero — appending it would draw a spike
-        // down to the axis and drag the y range with it.
-        if (std::isnan(profile[i])) continue;
-        series->append(static_cast<double>(i), profile[i]);
-        yMin = std::min(yMin, profile[i]);
-        yMax = std::max(yMax, profile[i]);
-    }
-    if (series->count() == 0) {
-        // Everything was masked: nothing to plot, and no range to build axes from.
-        delete series;
-        m_last_profile.clear();
+    if (!haveCurves) {
         if (m_legend) m_legend->setEntries({});
-        m_chart->setTitle(tr("Every line is no-data"));
+        m_status->setText(tr("Press Compute to profile the active layer — or, when its pane is "
+                             "synced, every visible layer across the sync group."));
+        // The axes were just removed, so any captured home names destroyed objects.
         if (m_chart_view) m_chart_view->captureHome();
         applyChartTheme();
         return;
     }
 
-    m_chart->addSeries(series);
+    // A curve's colour names its PANE (FR-ANL-8): hue from the pane colour, a lightness step
+    // and a dash pattern for its position among THAT pane's curves. "Original palette" drops
+    // all of that and cycles ten fixed hues by curve position.
+    static const QColor kLegacyColors[] = {
+        QColor(0x1f, 0x77, 0xb4), QColor(0xff, 0x7f, 0x0e), QColor(0x2c, 0xa0, 0x2c),
+        QColor(0xd6, 0x27, 0x28), QColor(0x94, 0x67, 0xbd), QColor(0x8c, 0x56, 0x4b),
+        QColor(0xe3, 0x77, 0xc2), QColor(0x7f, 0x7f, 0x7f), QColor(0xbc, 0xbd, 0x22),
+        QColor(0x17, 0xbe, 0xcf),
+    };
+    const bool byPane = Settings::instance().curveColorScheme() != 1;
+    const bool isDark = QApplication::palette().window().color().lightness() < 128;
+    const QColor fallbackPane = QApplication::palette().highlight().color();
+    QHash<quint64, int> seenInPane;
+    QVector<FvLegendEntry> legend;
+    int drawn = 0;
+
+    double xMax = 1.0;
+    double yMin = std::numeric_limits<double>::max();
+    double yMax = std::numeric_limits<double>::lowest();
+
+    for (const Curve& c : m_current->curves) {
+        // Gather the drawable points BEFORE claiming a colour slot or a legend row: a curve
+        // whose every line is masked away draws nothing, so it must contribute nothing — a
+        // legend entry for a line that is not on the chart contradicts it.
+        QList<QPointF> pts;
+        for (size_t i = 0; i < c.values.size(); ++i) {
+            const double y = c.values[i];
+            if (std::isnan(y)) continue;   // fully-masked line: a gap, not a spike to zero
+            pts.append(QPointF(static_cast<double>(i), y));
+        }
+        if (pts.isEmpty()) continue;
+
+        const int idx = seenInPane[c.paneId]++;
+        const QColor col = byPane
+            ? fvCurveColor(c.paneColor.isValid() ? c.paneColor : fallbackPane, idx, isDark)
+            : kLegacyColors[drawn % 10];
+        const Qt::PenStyle dash = byPane ? fvCurveDash(idx) : Qt::SolidLine;
+        QPen pen(col);
+        pen.setWidth(2);
+        pen.setStyle(dash);
+
+        auto* series = new QLineSeries();
+        series->setName(curveLabel(c));
+        series->setPen(pen);
+        series->replace(pts);
+        for (const QPointF& pt : pts) {
+            xMax = std::max(xMax, pt.x());
+            yMin = std::min(yMin, pt.y());
+            yMax = std::max(yMax, pt.y());
+        }
+        m_chart->addSeries(series);
+        legend.push_back(FvLegendEntry{curveKey(c), curveLabel(c), col, dash, true});
+        ++drawn;
+    }
+
+    if (m_legend) m_legend->setEntries(legend);
+
+    if (m_chart->series().isEmpty()) {
+        // Every line of every curve is no-data.
+        m_status->setText(tr("Every line is no-data."));
+        if (m_legend) m_legend->setEntries({});
+        if (m_chart_view) m_chart_view->captureHome();
+        applyChartTheme();
+        return;
+    }
+    m_status->setText(tr("%n curve(s)", "", drawn));
 
     if (yMin == yMax) { yMin -= 1.0; yMax += 1.0; }
 
+    const bool scanMode = m_current->curves.front().scanMode;
     auto* axisX = new QValueAxis();
     axisX->setTitleText(m_x_override.isEmpty() ? (scanMode ? tr("Row") : tr("Column"))
                                                : m_x_override);
-    axisX->setRange(0.0, static_cast<double>(profile.size() - 1));
+    axisX->setRange(0.0, xMax);
 
     auto* axisY = new QValueAxis();
     axisY->setTitleText(m_y_override.isEmpty() ? tr("Value") : m_y_override);
-    double margin = (yMax - yMin) * 0.05;
+    const double margin = (yMax - yMin) * 0.05;
     axisY->setRange(yMin - margin, yMax + margin);
 
     m_chart->addAxis(axisX, Qt::AlignBottom);
     m_chart->addAxis(axisY, Qt::AlignLeft);
-    series->attachAxis(axisX);
-    series->attachAxis(axisY);
+    for (auto* s : m_chart->series()) {
+        s->attachAxis(axisX);
+        s->attachAxis(axisY);
+    }
 
-    m_chart->setTitle(m_title_override.isEmpty()
-                          ? QString(tr("Profile: %1")).arg(series->name())
-                          : m_title_override);
-
-    // Keep the numbers for the CSV export, and make THESE ranges the toolbar's home. The
-    // axes are new objects on every Compute, so the capture has to happen here — a capture
-    // taken once at construction would key ranges to axes that no longer exist.
-    m_last_profile = profile;
-    m_last_x_title = scanMode ? tr("Row") : tr("Column");
-    m_last_series  = autoName;
-    if (m_legend)
-        m_legend->setEntries({ FvLegendEntry{QStringLiteral("profile"), series->name(),
-                                             curveCol, Qt::SolidLine, true} });
+    // These auto-fitted ranges are what the toolbar's home button returns to. The axes are new
+    // objects on every replot, so the capture has to happen here — one taken at construction
+    // would key ranges to destroyed axes and home would be a no-op after the first refresh.
     if (m_chart_view) m_chart_view->captureHome();
     applyChartTheme();   // the axes are new objects, so they need re-tinting each time
+}
+
+void ScanPixProfilePanel::changeEvent(QEvent* e) {
+    // A full re-render, not just applyChartTheme(): the curve colours come from a per-theme
+    // lightness band (fvCurveColor), so a theme switch has to restyle the series as well as
+    // the chrome. The VALUES do not depend on the theme, so nothing is recomputed.
+    if (e->type() == QEvent::PaletteChange || e->type() == QEvent::StyleChange)
+        render();
+    QWidget::changeEvent(e);
 }

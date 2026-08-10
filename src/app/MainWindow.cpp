@@ -172,13 +172,16 @@ MainWindow::MainWindow(QWidget* parent)
         // longer do, it is discarded (Phase 26). Recomputing the group each time — rather than
         // clearing on any role change — keeps merges alive across a master rename/recolour,
         // which emits this same signal.
-        if (m_spectral_panel) {
+        if (m_spectral_panel || m_profile_panel) {
             QSet<quint64> synced;
             for (int i = 0; i < m_pane_layout->paneCount(); ++i) {
                 const uint64_t id = m_pane_layout->paneId(i);
                 if (m_pane_layout->paneSynced(id)) synced.insert(id);
             }
-            m_spectral_panel->dropMergedPlotsOutside(synced);
+            if (m_spectral_panel) m_spectral_panel->dropMergedPlotsOutside(synced);
+            // The profile merges across a sync group too since Phase 26.5, so its merges are
+            // invalidated by the same event.
+            if (m_profile_panel) m_profile_panel->dropMergedPlotsOutside(synced);
         }
     });
 
@@ -1167,6 +1170,8 @@ void MainWindow::setupDocks() {
         }
         // Drop the removed layer's spectra (and its membership of any merged plot) — Phase 26.
         if (m_spectral_panel) m_spectral_panel->forgetLayer(rl_removed->layerId());
+        // The profile keeps the same per-layer bookkeeping since Phase 26.5 (FR-ANL-12).
+        if (m_profile_panel) m_profile_panel->forgetLayer(rl_removed->layerId());
     });
     // A layer change (e.g. visibility toggle) re-evaluates each pane's legend so the colorbar
     // appears/disappears with the rendered layer (Phase 6.4.2, point 1).
@@ -1310,12 +1315,27 @@ void MainWindow::setupDocks() {
     // PaneLayout, exactly as the Layers panel's colour resolver is wired.
     m_profile_panel->setPaneColorResolver(
         [this](quint64 pid) { return m_pane_layout->paneColorForId(pid); });
+    // What one Compute profiles (Phase 26.5, FR-ANL-12): the active layer alone, or — when its
+    // pane is synced — every visible raster across the whole sync group, merged into one plot.
+    // Assembled here for the same reason the inspect groups are: only MainWindow knows the
+    // sync roles, and using the SAME InspectPaneGroup shape keeps the profile's idea of a
+    // "scope" identical to the Pixel Inspector's and the Spectral Plot's.
+    m_profile_panel->setScopeResolver([this] { return buildProfileScope(); });
     profileDock->setWidget(m_profile_panel);
     addDockWidget(Qt::BottomDockWidgetArea, profileDock);
     profileDock->setFloating(true);
     profileDock->resize(760, 520);
     profileDock->hide();
     m_profile_dock = profileDock;
+
+    // Closing the panel discards its plots, exactly as the Spectral Plot's are (FR-ANL-12):
+    // the profiles are a live working set, not a document, so the per-layer memory lasts only
+    // while the panel is open. visibilityChanged also fires when the dock merely loses the
+    // front of a tab group, so the handler re-checks isHidden().
+    connect(profileDock, &QDockWidget::visibilityChanged, this, [this](bool visible) {
+        if (!visible && m_profile_dock && m_profile_dock->isHidden() && m_profile_panel)
+            m_profile_panel->forgetAll();
+    });
 
     // Track every dock with its fresh-build placement so View → Panels can re-open a
     // closed panel at its original location (FR-APP-9). reserve() first: buildPanelsMenu
@@ -1893,6 +1913,54 @@ int MainWindow::topLayerIndexInPane(uint64_t paneId) const {
     return -1;
 }
 
+QVector<InspectPaneGroup> MainWindow::buildProfileScope() const {
+    QVector<InspectPaneGroup> groups;
+    if (!m_layer_mgr || !m_pane_layout) return groups;
+
+    auto active = m_layer_mgr->activeLayer();
+    if (!active || active->type() != LayerType::Raster) return groups;
+    const uint64_t activePane = active->paneId();
+
+    // Unsynced: the active layer alone, which is what the profile always did — including when
+    // it is hidden, since the user chose it explicitly in the Layers panel.
+    if (!m_pane_layout->paneSynced(activePane)) {
+        InspectPaneGroup grp;
+        grp.paneId    = activePane;
+        grp.paneColor = m_pane_layout->paneColorForId(activePane);
+        for (int i = 0; i < m_pane_layout->paneCount(); ++i)
+            if (m_pane_layout->paneId(i) == activePane) {
+                grp.paneLabel = m_pane_layout->paneLabel(i);
+                break;
+            }
+        grp.layers.push_back(InspectLayerEntry{ active->name(),
+                                                static_cast<RasterLayer*>(active.get()) });
+        groups.push_back(std::move(grp));
+        return groups;
+    }
+
+    // Synced: every VISIBLE raster in every pane of the group, merged into one plot — the
+    // right-click rule of inspectFromPane, applied to profiles. A hidden layer is excluded for
+    // the same reason it is there: its numbers are not on screen to be compared against.
+    for (int i = 0; i < m_pane_layout->paneCount(); ++i) {
+        const uint64_t pid = m_pane_layout->paneId(i);
+        if (!m_pane_layout->paneSynced(pid)) continue;
+
+        InspectPaneGroup grp;
+        grp.paneId    = pid;
+        grp.paneLabel = m_pane_layout->paneLabel(i);
+        grp.paneColor = m_pane_layout->paneColorForId(pid);
+        for (int j = 0; j < m_layer_mgr->count(); ++j) {   // list order is top→bottom
+            auto l = m_layer_mgr->layerAt(j);
+            if (!l || l->paneId() != pid) continue;
+            if (l->type() != LayerType::Raster || !l->visible()) continue;
+            grp.layers.push_back(InspectLayerEntry{ l->name(),
+                                                    static_cast<RasterLayer*>(l.get()) });
+        }
+        if (!grp.layers.isEmpty()) groups.push_back(std::move(grp));
+    }
+    return groups;
+}
+
 void MainWindow::inspectFromPane(MapCanvas* clicked, double gx, double gy, bool allLayers) {
     if (!clicked || !m_layer_mgr || !m_pane_layout) return;
     const int clickedIdx = m_pane_layout->indexOfCanvas(clicked);
@@ -2020,6 +2088,10 @@ void MainWindow::onActiveLayerChanged(int index) {
     // the case it exists for. It IS driven by `index`, not `rl`, so the panel keeps naming
     // the layer even when the per-layer property widgets are blanked.
     if (m_spectral_panel) m_spectral_panel->showLayerPlot(index);
+    // The Scan/Pixel Profile follows the activated layer on the same terms since Phase 26.5
+    // (FR-ANL-12): its stored profile if one has been computed — the whole merged plot when the
+    // layer belongs to one — else a blank chart titled with the layer's name.
+    if (m_profile_panel) m_profile_panel->showLayerPlot(index);
 
     // Reflect the active layer's display-resampling mode in the View menu radios
     // (fall back to the persisted default when there is no active raster layer).
