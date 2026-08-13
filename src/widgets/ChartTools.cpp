@@ -6,16 +6,15 @@
 #include <QtCharts/QChart>
 #include <QtCharts/QValueAxis>
 
-#include <QAction>
 #include <QApplication>
-#include <QContextMenuEvent>
 #include <QEvent>
 #include <QFontMetrics>
-#include <QMenu>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QCheckBox>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QDoubleValidator>
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QInputDialog>
@@ -28,6 +27,7 @@
 #include <QSaveFile>
 #include <QSvgGenerator>
 #include <QScrollArea>
+#include <QToolButton>
 #include <QResizeEvent>
 #include <QStringList>
 #include <QSvgRenderer>
@@ -168,37 +168,6 @@ void FvChartView::wheelEvent(QWheelEvent* e) {
     e->accept();
 }
 
-void FvChartView::contextMenuEvent(QContextMenuEvent* e) {
-    // QChart paints its title and axis titles itself — there are no scene items to pick — so
-    // the hit test is the BAND each label lives in, measured off the plot area:
-    //   above it            → the plot title
-    //   below it, outer half→ the X axis title (the inner half is the tick labels)
-    //   left of it, outer   → the Y axis title
-    // A click inside the plot area, or on the tick labels, falls through to the base class:
-    // the menu names one label, so it must not appear where no label is.
-    if (!chart()) { QChartView::contextMenuEvent(e); return; }
-    const QRectF plot = chart()->plotArea();
-    if (plot.isEmpty()) { QChartView::contextMenuEvent(e); return; }
-    const QPointF p = e->pos();
-
-    bool hit = false;
-    FvChartLabel which = FvChartLabel::Title;
-    if (p.y() < plot.top()) {
-        hit = true;                                    // the band above holds only the title
-    } else if (p.y() > plot.bottom()) {
-        const double band = rect().bottom() - plot.bottom();
-        hit = band > 0 && p.y() > plot.bottom() + band * 0.5;
-        which = FvChartLabel::XAxis;
-    } else if (p.x() < plot.left()) {
-        hit = p.x() < plot.left() * 0.5;
-        which = FvChartLabel::YAxis;
-    }
-    if (!hit) { QChartView::contextMenuEvent(e); return; }
-
-    emit labelContextMenuRequested(which, e->globalPos());
-    e->accept();
-}
-
 // ---------------------------------------------------------------------------
 // FvChartLegend
 // ---------------------------------------------------------------------------
@@ -245,22 +214,6 @@ protected:
 private:
     QColor       m_color;
     Qt::PenStyle m_style;
-};
-
-// One legend row. It exists as a class only for its context menu: Edit and Delete are reached
-// by right-clicking the entry, and a plain QWidget has no way to report that with its index.
-class LegendRow : public QWidget {
-public:
-    LegendRow(int index, std::function<void(int, QPoint)> onMenu, QWidget* parent)
-        : QWidget(parent), m_index(index), m_on_menu(std::move(onMenu)) {}
-protected:
-    void contextMenuEvent(QContextMenuEvent* e) override {
-        if (m_on_menu) m_on_menu(m_index, e->globalPos());
-        e->accept();
-    }
-private:
-    int m_index{-1};
-    std::function<void(int, QPoint)> m_on_menu;
 };
 
 }  // namespace
@@ -327,9 +280,8 @@ void FvChartLegend::rebuild() {
     const QFontMetrics fm(font());
     const int avail = labelWidth();
 
-    for (int i = 0; i < m_entries.size(); ++i) {
-        const FvLegendEntry& e = m_entries[i];
-        auto* row = new LegendRow(i, [this](int idx, QPoint gp) { showRowMenu(idx, gp); }, this);
+    for (const FvLegendEntry& e : m_entries) {
+        auto* row = new QWidget(this);
         auto* lay = new QHBoxLayout(row);
         lay->setContentsMargins(0, 0, 0, 0);
         lay->setSpacing(6);
@@ -341,8 +293,7 @@ void FvChartLegend::rebuild() {
 
         auto* label = new QLabel(fvFitWords(e.text, fm, avail), row);
         label->setWordWrap(true);
-        label->setToolTip(e.text + QChar::LineFeed
-                          + tr("Right-click to rename or remove this curve"));
+        label->setToolTip(e.text);
         label->setTextInteractionFlags(Qt::TextSelectableByMouse);
         // Ignored horizontally: the label takes whatever the row has left rather than demanding
         // its own preferred width — which, for a wrapping label, is its ONE-LINE width.
@@ -361,35 +312,6 @@ void FvChartLegend::deleteEntry(int index) {
     if (index >= 0 && index < m_entries.size()) emit entryDeleted(index);
 }
 
-void FvChartLegend::showRowMenu(int index, const QPoint& globalPos) {
-    if (index < 0 || index >= m_entries.size()) return;
-    const FvLegendEntry& e = m_entries[index];
-    if (!e.renamable && !e.deletable) return;
-
-    QMenu menu(this);
-    QAction* rename = e.renamable ? menu.addAction(tr("Edit Label…")) : nullptr;
-    QAction* remove = e.deletable ? menu.addAction(tr("Delete Curve")) : nullptr;
-    QAction* chosen = menu.exec(globalPos);
-    if (!chosen) return;
-    if (chosen == rename) promptRename(index);
-    // Deleting rebuilds the legend, so nothing here may touch m_entries afterwards.
-    else if (chosen == remove) emit entryDeleted(index);
-}
-
-void FvChartLegend::promptRename(int index) {
-    if (index < 0 || index >= m_entries.size()) return;
-    const QString key = m_entries[index].key;
-    // A single-line editor deliberately: the wrap in the legend is automatic, so a user typing
-    // newlines would be fighting it.
-    const QString cur = QString(m_entries[index].text).replace(QChar::LineFeed,
-                                                               QLatin1Char(' '));
-    bool ok = false;
-    const QString text = QInputDialog::getText(
-        this, tr("Rename Legend Entry"), tr("Label (leave empty to restore the default):"),
-        QLineEdit::Normal, cur, &ok);
-    if (ok) emit entryRenamed(key, text.trimmed());
-}
-
 void FvChartLegend::resizeEvent(QResizeEvent* e) {
     QWidget::resizeEvent(e);
     // The elision depends on the column's width, so a resize has to re-measure. Only on a
@@ -398,22 +320,307 @@ void FvChartLegend::resizeEvent(QResizeEvent* e) {
 }
 
 // ---------------------------------------------------------------------------
-// fvPromptChartLabel
+// fvApplyAxisTicks
 // ---------------------------------------------------------------------------
 
-bool fvPromptChartLabel(QWidget* parent, const QString& what, const QString& automatic,
-                        QString& current) {
-    bool ok = false;
-    // The automatic text goes in the PROMPT, not in a placeholder: QInputDialog has no
-    // placeholder, and without it "leave empty to restore the default" does not say what the
-    // default is.
-    const QString prompt = automatic.isEmpty()
-        ? QObject::tr("%1 (leave empty to restore the default):").arg(what)
-        : QObject::tr("%1 (leave empty to restore “%2”):").arg(what, automatic);
-    const QString text = QInputDialog::getText(parent, QObject::tr("Edit %1").arg(what),
-                                               prompt, QLineEdit::Normal, current, &ok);
-    if (!ok) return false;
-    current = text.trimmed();
+void fvApplyAxisTicks(QValueAxis* axis, const FvAxisTicks& t) {
+    if (!axis || !t.manual) return;
+    const double lo = std::min(t.start, t.end);
+    const double hi = std::max(t.start, t.end);
+    axis->setRange(lo, hi);
+    // Direction lives in `reverse`, never in an inverted range: QValueAxis expects min < max,
+    // and so does every zoom/pan calculation in FvChartView.
+    axis->setReverse(t.end < t.start);
+    if (t.step == 0.0) return;                       // range pinned, tick spacing left to Qt
+
+    axis->setTickType(QValueAxis::TicksDynamic);
+    axis->setTickAnchor(lo);
+    axis->setTickInterval(std::abs(t.step));
+    // "%d" would print 1.5 and 2.0 as the same label. Only widen the format when the step is
+    // actually fractional, so a band axis keeps its integer ticks.
+    if (std::abs(t.step - std::round(t.step)) > 1e-12
+        && axis->labelFormat() == QLatin1String("%d"))
+        axis->setLabelFormat(QStringLiteral("%g"));
+}
+
+// ---------------------------------------------------------------------------
+// fvEditPlotLabels
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// A section header that folds its contents away. The dialog has three sections and a plot can
+// carry dozens of curves, so "every row visible" needs somewhere to put the ones you are not
+// working on. QToolButton rather than a styled QLabel: it already draws an arrow, takes focus
+// and toggles from the keyboard.
+void fvMakeFold(const QString& text, QWidget* body, QVBoxLayout* into, bool open) {
+    auto* head = new QToolButton(body->parentWidget());
+    head->setText(text);
+    head->setCheckable(true);
+    head->setChecked(open);
+    head->setAutoRaise(true);
+    head->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    head->setArrowType(open ? Qt::DownArrow : Qt::RightArrow);
+    QObject::connect(head, &QToolButton::toggled, body, [head, body](bool on) {
+        head->setArrowType(on ? Qt::DownArrow : Qt::RightArrow);
+        body->setVisible(on);
+    });
+    body->setVisible(open);
+    into->addWidget(head);
+    into->addWidget(body);
+}
+
+// One row of the Titles section: Show + caption + the field.
+struct TitleRow {
+    QCheckBox* show{nullptr};
+    QLineEdit* edit{nullptr};
+};
+
+TitleRow fvAddTitleRow(QFormLayout* form, QWidget* parent, const FvLabelSpec& spec) {
+    TitleRow r;
+    auto* line = new QWidget(parent);
+    auto* lay  = new QHBoxLayout(line);
+    lay->setContentsMargins(0, 0, 0, 0);
+    r.show = new FvTickCheckBox(QObject::tr("Show"), line);
+    r.show->setChecked(spec.shown);
+    r.edit = new QLineEdit(spec.text, line);
+    // The automatic text as placeholder: it shows what clearing the field restores, so Reset
+    // needs no separate control and cannot fall out of step with the real default.
+    r.edit->setPlaceholderText(spec.automatic);
+    r.edit->setMinimumWidth(280);
+    r.edit->setEnabled(spec.shown);
+    QObject::connect(r.show, &QCheckBox::toggled, r.edit, &QLineEdit::setEnabled);
+    lay->addWidget(r.show);
+    lay->addWidget(r.edit, 1);
+    form->addRow(spec.caption, line);
+    return r;
+}
+
+// One axis's three fields. Blank means "not set" -- QLineEdit rather than QDoubleSpinBox,
+// because a spin box has no empty state to mean "automatic" with.
+struct TickRow {
+    QLineEdit *start{nullptr}, *end{nullptr}, *step{nullptr};
+};
+
+TickRow fvAddTickRow(QFormLayout* form, QWidget* parent, const QString& caption,
+                     const FvAxisTicks& t) {
+    TickRow r;
+    auto* line = new QWidget(parent);
+    auto* lay  = new QHBoxLayout(line);
+    lay->setContentsMargins(0, 0, 0, 0);
+    auto mk = [&](const QString& ph) {
+        auto* e = new QLineEdit(line);
+        e->setPlaceholderText(ph);
+        e->setValidator(new QDoubleValidator(e));
+        e->setMaximumWidth(90);
+        return e;
+    };
+    r.start = mk(QObject::tr("start"));
+    r.end   = mk(QObject::tr("end"));
+    r.step  = mk(QObject::tr("step"));
+    if (t.manual) {
+        r.start->setText(QString::number(t.start, 'g', 10));
+        r.end->setText(QString::number(t.end, 'g', 10));
+        if (t.step != 0.0) r.step->setText(QString::number(t.step, 'g', 10));
+    }
+    lay->addWidget(r.start);
+    lay->addWidget(r.end);
+    lay->addWidget(r.step);
+    lay->addStretch(1);
+    form->addRow(caption, line);
+    return r;
+}
+
+// Read one axis's fields. False (with `err` filled) when the three do not describe an axis.
+bool fvReadTicks(const TickRow& row, const QString& axis, FvAxisTicks& out, QString& err) {
+    const QString s = row.start->text().trimmed();
+    const QString e = row.end->text().trimmed();
+    const QString p = row.step->text().trimmed();
+    out = FvAxisTicks{};
+    if (s.isEmpty() && e.isEmpty() && p.isEmpty()) return true;      // auto-fit, the default
+    if (s.isEmpty() || e.isEmpty()) {
+        err = QObject::tr("%1: give both a start and an end, or leave all three empty.").arg(axis);
+        return false;
+    }
+    out.manual = true;
+    out.start  = s.toDouble();
+    out.end    = e.toDouble();
+    if (out.start == out.end) {
+        err = QObject::tr("%1: start and end must differ.").arg(axis);
+        return false;
+    }
+    if (p.isEmpty()) return true;                                    // range set, ticks auto
+    out.step = p.toDouble();
+    if (out.step == 0.0) {
+        err = QObject::tr("%1: a step of 0 names no interval.").arg(axis);
+        return false;
+    }
+    // The step's SIGN must agree with the direction the range asks for. Reinterpreting it
+    // silently would draw an axis the user did not describe; an error says which field is wrong.
+    const bool descending = out.end < out.start;
+    if (descending != (out.step < 0.0)) {
+        err = descending
+            ? QObject::tr("%1: end is below start, so the step must be negative.").arg(axis)
+            : QObject::tr("%1: end is above start, so the step must be positive.").arg(axis);
+        return false;
+    }
+    return true;
+}
+
+}  // namespace
+
+bool fvEditPlotLabels(QWidget* parent, FvPlotLabels& labels) {
+    QDialog dlg(parent);
+    dlg.setWindowTitle(QObject::tr("Plot Labels"));
+
+    auto* outer = new QVBoxLayout(&dlg);
+
+    // ---- Titles -------------------------------------------------------------
+    auto* titles    = new QWidget(&dlg);
+    auto* titleForm = new QFormLayout(titles);
+    titleForm->setContentsMargins(12, 0, 0, 6);
+    const TitleRow rTitle = fvAddTitleRow(titleForm, titles, labels.title);
+    const TitleRow rX     = fvAddTitleRow(titleForm, titles, labels.xTitle);
+    const TitleRow rY     = fvAddTitleRow(titleForm, titles, labels.yTitle);
+    fvMakeFold(QObject::tr("Titles"), titles, outer, true);
+    if (!labels.hasPlot) {
+        rTitle.show->setEnabled(false);
+        rTitle.edit->setEnabled(false);
+    }
+
+    // ---- Legend -------------------------------------------------------------
+    auto* legendBody = new QWidget(&dlg);
+    auto* legendLay  = new QVBoxLayout(legendBody);
+    legendLay->setContentsMargins(12, 0, 0, 6);
+
+    struct LegendRowUi {
+        QCheckBox*  show{nullptr};
+        QLineEdit*  edit{nullptr};
+        QToolButton* del{nullptr};
+    };
+    auto* rows = new QVector<LegendRowUi>();      // owned by the dialog, freed with it
+    QObject::connect(&dlg, &QObject::destroyed, [rows] { delete rows; });
+    rows->reserve(labels.legend.size());
+
+    for (const FvLabelSpec& spec : labels.legend) {
+        auto* row = new QWidget(legendBody);
+        auto* lay = new QHBoxLayout(row);
+        lay->setContentsMargins(0, 0, 0, 0);
+
+        LegendRowUi ui;
+        ui.show = new FvTickCheckBox(QString(), row);
+        ui.show->setChecked(spec.shown);
+        ui.show->setToolTip(QObject::tr("Show this entry in the legend. The curve is drawn "
+                                        "either way."));
+
+        auto* swatch = new QLabel(row);
+        swatch->setFixedSize(kFvCurveSwatchW, kFvCurveSwatchH);
+        QPixmap pm(kFvCurveSwatchW, kFvCurveSwatchH);
+        pm.fill(Qt::transparent);
+        {
+            QPainter sp(&pm);
+            fvPaintCurveSwatch(&sp, QRect(0, 0, kFvCurveSwatchW, kFvCurveSwatchH),
+                               spec.color, spec.style, dlg.palette());
+        }
+        swatch->setPixmap(pm);
+
+        ui.edit = new QLineEdit(spec.text, row);
+        ui.edit->setPlaceholderText(spec.automatic);
+        ui.edit->setMinimumWidth(260);
+        ui.edit->setEnabled(spec.shown);
+        QObject::connect(ui.show, &QCheckBox::toggled, ui.edit, &QLineEdit::setEnabled);
+
+        // Checkable, not one-shot: the deletion lands on OK with every other edit, so while the
+        // dialog is open it has to be both visible and revocable.
+        ui.del = new QToolButton(row);
+        ui.del->setText(QObject::tr("Delete"));
+        ui.del->setToolTip(QObject::tr("Delete this curve when OK is pressed"));
+        ui.del->setCheckable(true);
+
+        lay->addWidget(ui.show);
+        lay->addWidget(swatch);
+        lay->addWidget(ui.edit, 1);
+        lay->addWidget(ui.del);
+        legendLay->addWidget(row);
+        rows->push_back(ui);
+
+        const int idx = rows->size() - 1;
+        QObject::connect(ui.del, &QToolButton::toggled, ui.del, [rows, idx](bool on) {
+            LegendRowUi& r = (*rows)[idx];
+            QFont f = r.edit->font();
+            f.setStrikeOut(on);
+            r.edit->setFont(f);
+            r.edit->setEnabled(!on && r.show->isChecked());
+            r.show->setEnabled(!on);
+        });
+    }
+    if (labels.legend.isEmpty())
+        legendLay->addWidget(new QLabel(QObject::tr("Nothing is plotted."), legendBody));
+    legendLay->addStretch(1);
+
+    // Dozens of curves would otherwise make a dialog taller than the screen.
+    auto* legendScroll = new QScrollArea(&dlg);
+    legendScroll->setWidgetResizable(true);
+    legendScroll->setFrameShape(QFrame::NoFrame);
+    legendScroll->setWidget(legendBody);
+    legendScroll->setMaximumHeight(260);
+    fvMakeFold(QObject::tr("Legend"), legendScroll, outer, true);
+
+    // ---- Axis ticks ---------------------------------------------------------
+    auto* ticks     = new QWidget(&dlg);
+    auto* ticksForm = new QFormLayout(ticks);
+    ticksForm->setContentsMargins(12, 0, 0, 6);
+    const TickRow rXt = fvAddTickRow(ticksForm, ticks, QObject::tr("X axis:"), labels.xTicks);
+    const TickRow rYt = fvAddTickRow(ticksForm, ticks, QObject::tr("Y axis:"), labels.yTicks);
+    auto* tickNote = new QLabel(QObject::tr(
+        "Leave empty to fit automatically. For a descending axis put the higher value in "
+        "start and give a negative step."), ticks);
+    tickNote->setWordWrap(true);
+    ticksForm->addRow(QString(), tickNote);
+    fvMakeFold(QObject::tr("Axis ticks"), ticks, outer,
+               labels.xTicks.manual || labels.yTicks.manual);
+
+    // ---- Buttons ------------------------------------------------------------
+    auto* err = new QLabel(&dlg);
+    err->setWordWrap(true);
+    err->setStyleSheet(QStringLiteral("color: #c0392b;"));
+    err->hide();
+    outer->addWidget(err);
+
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    outer->addWidget(buttons);
+
+    FvAxisTicks xt, yt;
+    QObject::connect(buttons, &QDialogButtonBox::accepted, &dlg, [&] {
+        QString msg;
+        // Validate BEFORE accepting: a rejected axis keeps the dialog open with the reason on
+        // screen, rather than being dropped on the floor once it has closed.
+        if (!fvReadTicks(rXt, QObject::tr("X axis"), xt, msg)
+            || !fvReadTicks(rYt, QObject::tr("Y axis"), yt, msg)) {
+            err->setText(msg);
+            err->show();
+            return;
+        }
+        dlg.accept();
+    });
+
+    if (dlg.exec() != QDialog::Accepted) return false;
+
+    auto readTitle = [](const TitleRow& r, FvLabelSpec& spec) {
+        spec.shown = r.show->isChecked();
+        spec.text  = r.edit->text().trimmed();
+    };
+    readTitle(rTitle, labels.title);
+    readTitle(rX, labels.xTitle);
+    readTitle(rY, labels.yTitle);
+    for (int i = 0; i < labels.legend.size() && i < rows->size(); ++i) {
+        labels.legend[i].shown   = (*rows)[i].show->isChecked();
+        labels.legend[i].text    = (*rows)[i].edit->text().trimmed();
+        labels.legend[i].deleted = (*rows)[i].del->isChecked();
+    }
+    labels.xTicks = xt;
+    labels.yTicks = yt;
     return true;
 }
 
@@ -468,6 +675,7 @@ FvChartToolbar::FvChartToolbar(FvChartView* chartView, QWidget* parent)
     m_hand->setToolTip(tr("Drag the plot to pan · scroll to zoom"));
     m_layout->addWidget(m_hand);
 
+    m_edit = mkButton(tr("Edit the titles, the legend and the axis ticks…"));
     m_save = mkButton(tr("Save the plot…"));
 
     // The icon cluster is one group and stays tight (spacing 2); everything a panel appends
@@ -482,6 +690,9 @@ FvChartToolbar::FvChartToolbar(FvChartView* chartView, QWidget* parent)
                 this,   [this](bool atHome) { m_home->setEnabled(!atHome); });
         m_home->setEnabled(false);
     }
+    // Not inside the view guard: the labels belong to the OWNER, and editing them means
+    // nothing to the chart view.
+    connect(m_edit, &SvgIconButton::clicked, this, &FvChartToolbar::editLabelsRequested);
     connect(m_save, &SvgIconButton::clicked, this, &FvChartToolbar::save);
 
     refreshIcons();
@@ -506,6 +717,7 @@ void FvChartToolbar::refreshIcons() {
     m_zoom_in->setSvgPath(":/icons/zoom_in"  + sfx + ".svg");
     m_zoom_out->setSvgPath(":/icons/zoom_out" + sfx + ".svg");
     m_home->setSvgPath(":/icons/home"        + sfx + ".svg");
+    m_edit->setSvgPath(":/icons/pencil"      + sfx + ".svg");
     m_save->setSvgPath(":/icons/save"        + sfx + ".svg");
     m_hand->setPixmap(renderSvg(":/icons/hand" + sfx + ".svg", 18, devicePixelRatioF()));
 }

@@ -5,16 +5,17 @@
 //
 //  • FvChartView    — a QChartView that pans on left-drag and zooms on the wheel, with a
 //                     remembered "home" range to return to.
-//  • FvChartToolbar — the ⊕ / ⊖ / ⌂ buttons, the drag-to-pan hint and Save (PNG / SVG / CSV).
+//  • FvChartToolbar — the ⊕ / ⊖ / ⌂ buttons, the drag-to-pan hint, the ✎ that opens the
+//                     labels dialog, Save (PNG / SVG / CSV), and the Grid toggle.
 //  • FvChartLegend  — the legend, replacing QChart's own. QLegend lays its markers out
 //                     horizontally, elides each to a single line, and draws a plain colour
 //                     block — none of which survives contact with a label like
 //                     "Pane 1 / Landsat_TOA_BT_100m.tif (481337.45, 2173212.10)", or with
 //                     FR-ANL-8's dash patterns.
-// Every label a plot draws is edited by RIGHT-CLICKING it: the title, each axis title
-// (FvChartView::labelContextMenuRequested) and each legend entry (FvChartLegend's own row
-// menu). No ✎ buttons: one per legend row crowded the entries off their own column, and a
-// toolbar button for "the labels" could not say WHICH label it would edit.
+//  • fvEditPlotLabels — ONE dialog behind the ✎ for everything a plot labels: the title, the
+//                     axis titles, the axis tick ranges, and every legend entry. The legend
+//                     column itself carries no buttons — a ✎ and a 🗑 per row took ~46 px of a
+//                     ~240 px column and the entries became unreadable.
 
 #include <QChartView>
 #include <QHash>
@@ -23,6 +24,7 @@
 #include <functional>
 
 class QChart;
+QT_FORWARD_DECLARE_CLASS(QValueAxis)
 class QEvent;
 class QVBoxLayout;
 class QMouseEvent;
@@ -34,10 +36,6 @@ class QLabel;
 /// than through QChart::zoom()/zoomReset(): the plots rebuild their axes on every refresh,
 /// which discards the chart's internal zoom stack, so `zoomReset()` would silently do
 /// nothing after a replot. Ranges we captured ourselves survive that.
-/// Which label a right-click landed on. The bands around the plot area are what is hit-tested
-/// — QChart draws its title and axis titles itself and exposes no items to pick.
-enum class FvChartLabel { Title = 0, XAxis = 1, YAxis = 2 };
-
 class FvChartView : public QChartView {
     Q_OBJECT
 public:
@@ -61,12 +59,7 @@ signals:
     /// disable a "home" button, or annotate that the view is no longer auto-fitted.
     void viewChanged(bool atHome);
 
-    /// The user right-clicked the plot title or an axis title. The owner opens the menu,
-    /// because only it knows the automatic text its "Edit" would offer to restore.
-    void labelContextMenuRequested(FvChartLabel which, const QPoint& globalPos);
-
 protected:
-    void contextMenuEvent(QContextMenuEvent* e) override;
     void mousePressEvent(QMouseEvent* e) override;
     void mouseMoveEvent(QMouseEvent* e) override;
     void mouseReleaseEvent(QMouseEvent* e) override;
@@ -99,13 +92,11 @@ struct FvLegendEntry {
     bool         deletable{true};        ///< offer Delete in the row's right-click menu
 };
 
-/// Vertical legend, sitting to the RIGHT of the chart. Each row is a swatch that carries the
-/// curve's colour AND pen style (fvPaintCurveSwatch) plus a word-wrapping label; Edit and
-/// Delete live in the row's RIGHT-CLICK menu. Scrolls when there are more curves than fit.
-///
-/// The buttons used to sit in the row. They cost ~46 px of a ~240 px column, which is most of
-/// what a two-line "«pane» / «file» (x, y)" entry needs, and squeezing the label that hard is
-/// what made the legend unreadable.
+/// Vertical legend, sitting to the RIGHT of the chart: one row per curve, a swatch carrying
+/// the curve's colour AND pen style (fvPaintCurveSwatch) beside a word-wrapping label, and
+/// nothing else. Renaming, hiding and deleting all live in the ✎ dialog (fvEditPlotLabels) —
+/// per-row buttons cost ~46 px of a ~240 px column and left the entries unreadable.
+/// Scrolls when there are more curves than fit.
 class FvChartLegend : public QWidget {
     Q_OBJECT
 public:
@@ -114,8 +105,9 @@ public:
     int  entryCount() const { return m_entries.size(); }
 
 public slots:
-    /// Delete row `index` exactly as its context menu would. Public because the menu is modal
-    /// and cannot be driven headlessly — a test needs the owner's delete path, not QMenu's.
+    /// Ask the owner to delete the curve row `index` draws. The dialog applies its own
+    /// deletions directly; this exists so the owner's delete path has one public entry point
+    /// (used by the tests, which cannot drive a modal dialog).
     void deleteEntry(int index);
 
 signals:
@@ -136,9 +128,6 @@ protected:
 
 private:
     void rebuild();
-    /// Row `index` was right-clicked — offer Edit / Delete.
-    void showRowMenu(int index, const QPoint& globalPos);
-    void promptRename(int index);
     /// Width available to a row's label, in pixels.
     int  labelWidth() const;
 
@@ -146,16 +135,50 @@ private:
     QVector<FvLegendEntry> m_entries;
 };
 
-/// Prompt for ONE label. `current` is what the user has typed before (empty when the automatic
-/// text is in force) and `automatic` is what clearing the field restores — shown in the prompt,
-/// since a single-line QInputDialog has nowhere to put a placeholder. Returns false on Cancel;
-/// on OK `current` holds the new value, empty meaning "back to the automatic text".
-bool fvPromptChartLabel(QWidget* parent, const QString& what, const QString& automatic,
-                        QString& current);
+/// One editable label in the ✎ dialog: a plot/axis title, or a legend entry.
+struct FvLabelSpec {
+    QString      caption;              ///< row heading (titles) — unused for legend rows
+    QString      text;                 ///< the user's override; EMPTY means "automatic"
+    QString      automatic;            ///< what an empty field restores; shown as placeholder
+    bool         shown{true};          ///< unticked ⇒ the label is not drawn at all
+    // Legend rows only:
+    QColor       color;
+    Qt::PenStyle style{Qt::SolidLine};
+    bool         deleted{false};       ///< out: the row's 🗑 was pressed (applied on OK)
+};
+
+/// A hand-set axis range and tick step. `manual` false ⇒ auto-fit, which is the default.
+/// `start` may exceed `end`: that is how a DESCENDING axis is asked for, and `step` must then
+/// be negative — a step whose sign disagrees with the range is rejected, not silently fixed.
+struct FvAxisTicks {
+    bool   manual{false};
+    double start{0.0}, end{0.0};
+    double step{0.0};                  ///< 0 with manual=true ⇒ automatic tick spacing
+};
+
+/// Apply a hand-set range/step to an axis. A no-op when `t.manual` is false, so a caller can
+/// hand it every axis unconditionally. The range is always set low→high with `setReverse`
+/// carrying the direction, which keeps FvChartView's zoom and pan arithmetic (min < max)
+/// working on a descending axis.
+void fvApplyAxisTicks(QValueAxis* axis, const FvAxisTicks& t);
+
+/// Everything the ✎ dialog edits, in and out.
+struct FvPlotLabels {
+    FvLabelSpec          title, xTitle, yTitle;
+    QVector<FvLabelSpec> legend;       ///< one per curve, in plot order — hidden ones included
+    FvAxisTicks          xTicks, yTicks;
+    bool                 hasPlot{true};///< false ⇒ nothing plotted; title and legend disabled
+};
+
+/// The ✎ dialog: three collapsible sections (Titles, Legend, Axis ticks). Returns false on
+/// Cancel, leaving `labels` untouched; on OK every field is written back, including each
+/// legend row's `deleted` flag. Rejects an axis whose step disagrees with its range rather
+/// than quietly reinterpreting it.
+bool fvEditPlotLabels(QWidget* parent, FvPlotLabels& labels);
 
 /// The button row above a chart: zoom in / zoom out / home, a hand icon captioning the
-/// drag-to-pan gesture, and Save. Labels are edited by right-clicking them, not from here.
-/// `chartView` must outlive the toolbar.
+/// drag-to-pan gesture, the ✎ that opens the labels dialog, and Save. `chartView` must outlive
+/// the toolbar.
 ///
 /// Save always offers PNG and SVG (rendered from the view, so what is saved is what is on
 /// screen, theme included). CSV appears only when the owner supplies a provider — the
@@ -176,6 +199,13 @@ public:
     /// Append a widget after the built-in buttons (e.g. the Spectral Plot's Persist/Clear).
     void addTrailingWidget(QWidget* w);
 
+signals:
+    /// The ✎ was pressed. The owner opens fvEditPlotLabels() with its own state, since only it
+    /// knows the automatic text behind every field.
+    void editLabelsRequested();
+
+public:
+
     /// What PNG/SVG export renders. Defaults to the chart view alone; a panel with a separate
     /// legend widget must pass the CONTAINER holding both, or the exported image silently
     /// loses the legend.
@@ -194,6 +224,7 @@ private:
     SvgIconButton* m_zoom_out{nullptr};
     SvgIconButton* m_home{nullptr};
     SvgIconButton* m_save{nullptr};
+    SvgIconButton* m_edit{nullptr};
     QWidget*       m_export{nullptr};   // null ⇒ the chart view alone
     QLabel*        m_hand{nullptr};
     class QHBoxLayout* m_layout{nullptr};

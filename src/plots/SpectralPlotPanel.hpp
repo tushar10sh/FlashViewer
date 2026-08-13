@@ -6,6 +6,7 @@
 #include <QString>
 #include <QVector>
 #include "gis/InspectTypes.hpp"
+#include "widgets/ChartTools.hpp"   // FvAxisTicks
 #include <memory>
 #include <string>
 #include <vector>
@@ -17,7 +18,6 @@ class QLabel;
 class QEvent;
 class FvChartView;
 class FvChartLegend;
-enum class FvChartLabel;
 class QComboBox;
 
 // Dockable Spectral Plot (Phase 26, FR-ANL-1). Replaces the free-floating Spectral Plot
@@ -88,6 +88,9 @@ private:
         QString             layerName;
         QString             coord;       // "(x, y)"
         std::vector<double> values;      // one per band; NaN = no-data (drawn as a gap)
+        // The curve is drawn either way; this only removes its LEGEND row (FR-ANL-10). Hidden
+        // rows are still listed by the labels dialog, or they could never be brought back.
+        bool                legendHidden{false};
     };
     // One plot: the scope that produced it plus the curves sampled so far.
     struct Plot {
@@ -101,6 +104,9 @@ private:
         // not be discarded the way a sync merge is when the panes stop moving together.
         bool           syncMerge{false};
         bool           allLayers{false};   // the click rule the title names
+        // "No title", which an EMPTY titleOverride cannot express -- that already means
+        // "use the automatic text".
+        bool           titleHidden{false};
     };
     using PlotPtr = std::shared_ptr<Plot>;
 
@@ -108,11 +114,11 @@ private:
     /// Display text for a curve: the user's override of the layer name if there is one, plus
     /// the pane prefix and the coordinates, which a rename never removes.
     QString curveLabel(const Curve& c) const;
-    /// The automatic (un-overridden) title and axis titles, offered by the edit prompt as what
-    /// clearing the field restores.
+    /// The automatic (un-overridden) title and axis titles, offered by the dialog as what
+    /// clearing a field restores.
     void defaultLabels(QString& title, QString& x, QString& y) const;
-    /// Right-click on the title or an axis title chose "Edit Label…" (FR-ANL-10).
-    void editLabel(FvChartLabel which);
+    /// The toolbar's ✎ — one dialog for the titles, the legend and the axis ticks (FR-ANL-10).
+    void editLabels();
     /// The plot on screen as CSV — one row per band, one column per curve — for the shared
     /// toolbar's Save. Empty when there is nothing plotted.
     QString curvesAsCsv() const;
@@ -120,9 +126,12 @@ private:
     // nothing maps to it any more.
     void detachLayer(quint64 layerId);
     void erasePlot(PlotPtr p);
-    /// Drop the curve the legend's `legendRow`-th entry draws (FR-ANL-13). A layer left with
-    /// no curve leaves the scope, and a plot left with no curves is discarded outright.
+    /// Drop the curve the legend's `legendRow`-th entry draws (FR-ANL-13) — the legend's own
+    /// numbering, which skips curves that draw nothing and rows the user has hidden.
     void deleteLegendRow(int legendRow);
+    /// Drop `m_current->curves[idx]`. A layer left with no curve leaves the scope, and a plot
+    /// left with no curves is discarded outright.
+    void deleteCurve(int idx);
     /// Rebuild `title` from what the plot NOW holds — Persist can add panes and layers long
     /// after the gesture that created it.
     void retitle(const PlotPtr& p);
@@ -142,6 +151,11 @@ private:
     // the text removes the key, which is what restores the automatic label.
     QHash<quint64, QString> m_name_override;
     QString                 m_x_override, m_y_override;
+    bool                    m_x_hidden{false}, m_y_hidden{false};
+    // Hand-set axis ranges/steps (FR-ANL-14). Manual ranges become the ⌂ home, which falls out
+    // of captureHome() running after the axes are built.
+    FvAxisTicks             m_x_ticks, m_y_ticks;
+    bool                    m_grid{true};
 
     // Legend row → index into m_current->curves, rebuilt by every render(). A curve whose
     // every band is no-data draws nothing and gets no legend row, so the two are not the same

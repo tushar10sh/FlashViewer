@@ -17,10 +17,8 @@
 #include <QtCharts/QLineSeries>
 #include <QtCharts/QValueAxis>
 
-#include <QAction>
 #include <QApplication>
 #include <QComboBox>
-#include <QMenu>
 #include <QEvent>
 #include <QWidget>
 #include <QVBoxLayout>
@@ -153,14 +151,7 @@ void ScanPixProfilePanel::setupUi() {
     auto* toolbar = new FvChartToolbar(m_chart_view, central);
     toolbar->setSuggestedName(QStringLiteral("scan_pixel_profile"));
     toolbar->setCsvProvider([this] { return profileAsCsv(); });
-    // Labels are edited by right-clicking them (FR-ANL-10) — the same gesture the Spectral
-    // Plot uses, so the two panels are learned once.
-    connect(m_chart_view, &FvChartView::labelContextMenuRequested, this,
-            [this](FvChartLabel which, const QPoint& globalPos) {
-                QMenu menu(this);
-                QAction* edit = menu.addAction(tr("Edit Label…"));
-                if (menu.exec(globalPos) == edit) editLabel(which);
-            });
+    connect(toolbar, &FvChartToolbar::editLabelsRequested, this, &ScanPixProfilePanel::editLabels);
 
     // The colour scheme is shared with the Spectral Plot through Settings, but it is offered
     // here too: since Phase 26.5 a profile plot can hold many curves, so which scheme is in
@@ -281,32 +272,68 @@ static QString buildProfileTitle(const QStringList& paneLabels, int curveCount,
         .arg(paneLabels.join(QStringLiteral(", ")));
 }
 
-void ScanPixProfilePanel::editLabel(FvChartLabel which) {
+void ScanPixProfilePanel::editLabels() {
     const bool scanMode = m_current && !m_current->curves.isEmpty()
                               ? m_current->curves.front().scanMode
                               : m_scan_radio->isChecked();
-    switch (which) {
-        case FvChartLabel::Title: {
-            // Nothing computed yet: the heading names the active layer, and an override would
-            // outlive the plot it was written for.
-            if (!m_current) return;
-            const QString def = m_current->title.isEmpty() ? tr("Profile")
-                                                           : tr("Profile: %1").arg(m_current->title);
-            QString v = m_current->titleOverride;
-            if (fvPromptChartLabel(this, tr("Plot Title"), def, v)) m_current->titleOverride = v;
-            break;
+    const QString dt = !m_current || m_current->title.isEmpty()
+                           ? tr("Profile")
+                           : tr("Profile: %1").arg(m_current->title);
+
+    FvPlotLabels spec;
+    spec.hasPlot = static_cast<bool>(m_current);
+    spec.title  = FvLabelSpec{tr("Plot:"), m_current ? m_current->titleOverride : QString(),
+                              dt, m_current ? !m_current->titleHidden : true,
+                              {}, Qt::SolidLine, false};
+    spec.xTitle = FvLabelSpec{tr("X axis:"), m_x_override, scanMode ? tr("Row") : tr("Column"),
+                              !m_x_hidden, {}, Qt::SolidLine, false};
+    spec.yTitle = FvLabelSpec{tr("Y axis:"), m_y_override, tr("Value"),
+                              !m_y_hidden, {}, Qt::SolidLine, false};
+    spec.xTicks = m_x_ticks;
+    spec.yTicks = m_y_ticks;
+
+    const bool isDark = QApplication::palette().window().color().lightness() < 128;
+    const QColor fallbackPane = QApplication::palette().highlight().color();
+    QHash<quint64, int> seenInPane;
+    if (m_current) {
+        for (const Curve& c : m_current->curves) {
+            const int idx = seenInPane[c.paneId]++;
+            FvLabelSpec row;
+            row.text      = m_name_override.value(curveKey(c));
+            row.automatic = c.layerName;
+            row.shown     = !c.legendHidden;
+            row.color     = fvCurveColor(c.paneColor.isValid() ? c.paneColor : fallbackPane,
+                                         idx, isDark);
+            row.style     = fvCurveDash(idx);
+            spec.legend.push_back(row);
         }
-        case FvChartLabel::XAxis: {
-            QString v = m_x_override;
-            if (fvPromptChartLabel(this, tr("X Axis Title"), scanMode ? tr("Row") : tr("Column"), v))
-                m_x_override = v;
-            break;
+    }
+
+    if (!fvEditPlotLabels(this, spec)) return;
+
+    if (m_current) {
+        m_current->titleOverride = spec.title.text;
+        m_current->titleHidden   = !spec.title.shown;
+    }
+    m_x_override = spec.xTitle.text;
+    m_y_override = spec.yTitle.text;
+    m_x_hidden   = !spec.xTitle.shown;
+    m_y_hidden   = !spec.yTitle.shown;
+    m_x_ticks    = spec.xTicks;
+    m_y_ticks    = spec.yTicks;
+
+    if (m_current) {
+        // Renames and Show flags first, deletions afterwards and back-to-front: deleting as we
+        // go would shift the indices the remaining rows are addressed by.
+        for (int i = 0; i < spec.legend.size() && i < m_current->curves.size(); ++i) {
+            Curve& c = m_current->curves[i];
+            c.legendHidden = !spec.legend[i].shown;
+            const QString t = spec.legend[i].text;
+            if (t.isEmpty()) m_name_override.remove(curveKey(c));
+            else             m_name_override.insert(curveKey(c), t);
         }
-        case FvChartLabel::YAxis: {
-            QString v = m_y_override;
-            if (fvPromptChartLabel(this, tr("Y Axis Title"), tr("Value"), v)) m_y_override = v;
-            break;
-        }
+        for (int i = spec.legend.size() - 1; i >= 0; --i)
+            if (spec.legend[i].deleted) deleteCurve(i);
     }
     render();
 }
@@ -627,9 +654,14 @@ void ScanPixProfilePanel::retitle(const PlotPtr& p) {
 }
 
 void ScanPixProfilePanel::deleteLegendRow(int legendRow) {
+    // The legend's own numbering, which skips curves that draw nothing and rows the user has
+    // hidden; the dialog addresses curves directly and calls deleteCurve().
     if (!m_current || legendRow < 0 || legendRow >= m_legend_curve.size()) return;
-    const int idx = m_legend_curve[legendRow];
-    if (idx < 0 || idx >= m_current->curves.size()) return;
+    deleteCurve(m_legend_curve[legendRow]);
+}
+
+void ScanPixProfilePanel::deleteCurve(int idx) {
+    if (!m_current || idx < 0 || idx >= m_current->curves.size()) return;
 
     const quint64 layerId = m_current->curves[idx].layerId;
     PlotPtr plot = m_current;                    // detachLayer/erasePlot may clear m_current
@@ -741,7 +773,9 @@ void ScanPixProfilePanel::render() {
     // Title: the plot's own scope when there is one, otherwise the layer the user just
     // activated — a blank chart still has to name what it would show.
     QString title;
-    if (haveCurves) {
+    if (haveCurves && m_current->titleHidden) {
+        title.clear();                       // deliberately no title (FR-ANL-10)
+    } else if (haveCurves) {
         // An override replaces the whole title, prefix included — a user who typed a title
         // meant that title, not "Profile: " plus that title.
         title = m_current->titleOverride.isEmpty() ? tr("Profile: %1").arg(m_current->title)
@@ -818,8 +852,10 @@ void ScanPixProfilePanel::render() {
             yMax = std::max(yMax, pt.y());
         }
         m_chart->addSeries(series);
-        legend.push_back(FvLegendEntry{curveKey(c), curveLabel(c), col, dash, true, true});
-        m_legend_curve.push_back(ci);    // this row draws m_current->curves[ci]
+        if (!c.legendHidden) {
+            legend.push_back(FvLegendEntry{curveKey(c), curveLabel(c), col, dash, true, true});
+            m_legend_curve.push_back(ci);    // this row draws m_current->curves[ci]
+        }
         ++drawn;
     }
 
@@ -840,14 +876,22 @@ void ScanPixProfilePanel::render() {
 
     const bool scanMode = m_current->curves.front().scanMode;
     auto* axisX = new QValueAxis();
-    axisX->setTitleText(m_x_override.isEmpty() ? (scanMode ? tr("Row") : tr("Column"))
-                                               : m_x_override);
+    axisX->setTitleText(m_x_hidden ? QString()
+                                   : (m_x_override.isEmpty() ? (scanMode ? tr("Row") : tr("Column"))
+                                                             : m_x_override));
     axisX->setRange(0.0, xMax);
 
     auto* axisY = new QValueAxis();
-    axisY->setTitleText(m_y_override.isEmpty() ? tr("Value") : m_y_override);
+    axisY->setTitleText(m_y_hidden ? QString()
+                                   : (m_y_override.isEmpty() ? tr("Value") : m_y_override));
     const double margin = (yMax - yMin) * 0.05;
     axisY->setRange(yMin - margin, yMax + margin);
+
+    // A hand-set range replaces the auto-fit, and captureHome() below then makes it home.
+    fvApplyAxisTicks(axisX, m_x_ticks);
+    fvApplyAxisTicks(axisY, m_y_ticks);
+    axisX->setGridLineVisible(m_grid);
+    axisY->setGridLineVisible(m_grid);
 
     m_chart->addAxis(axisX, Qt::AlignBottom);
     m_chart->addAxis(axisY, Qt::AlignLeft);
