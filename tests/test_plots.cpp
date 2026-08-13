@@ -24,6 +24,7 @@
 #include <QObject>
 #include <QSet>
 #include <QVector>
+#include <QtCharts/QValueAxis>
 
 #include <memory>
 
@@ -259,4 +260,51 @@ TEST_CASE("A profile plot is reachable from every layer of its scope", "[plots][
     h.mgr.setActiveLayer(2);
     REQUIRE(h.mgr.count() == 3);
     (void)lone;
+}
+
+// fvApplyAxisTicks is the whole of FR-ANL-14 that can be pinned without a dialog: the range is
+// always stored low-to-high with `reverse` carrying the direction, because QValueAxis expects
+// min < max and so does every zoom/pan calculation in FvChartView.
+TEST_CASE("A hand-set axis range keeps min below max and reverses instead", "[plots][TC-ANL-25]") {
+    QValueAxis axis;
+    axis.setRange(0.0, 1.0);
+    axis.setLabelFormat(QStringLiteral("%d"));
+
+    SECTION("auto by default") {
+        fvApplyAxisTicks(&axis, FvAxisTicks{});
+        CHECK(axis.min() == 0.0);
+        CHECK(axis.max() == 1.0);
+        CHECK_FALSE(axis.isReverse());
+    }
+
+    SECTION("ascending range, positive step") {
+        fvApplyAxisTicks(&axis, FvAxisTicks{true, 0.0, 100.0, 20.0});
+        CHECK(axis.min() == 0.0);
+        CHECK(axis.max() == 100.0);
+        CHECK_FALSE(axis.isReverse());
+        CHECK(axis.tickInterval() == 20.0);
+        CHECK(axis.tickAnchor() == 0.0);
+        CHECK(axis.labelFormat() == QStringLiteral("%d"));   // integer step keeps %d
+    }
+
+    SECTION("descending range, negative step") {
+        fvApplyAxisTicks(&axis, FvAxisTicks{true, 100.0, 0.0, -20.0});
+        CHECK(axis.min() == 0.0);          // stored low→high whatever the direction
+        CHECK(axis.max() == 100.0);
+        CHECK(axis.isReverse());
+        CHECK(axis.tickInterval() == 20.0);   // the interval is a magnitude
+    }
+
+    SECTION("a fractional step widens the label format") {
+        fvApplyAxisTicks(&axis, FvAxisTicks{true, 0.0, 4.0, 0.5});
+        CHECK(axis.labelFormat() == QStringLiteral("%g"));   // %d would print 1.5 as 2
+    }
+
+    SECTION("range without a step leaves the tick spacing to Qt") {
+        const qreal before = axis.tickInterval();
+        fvApplyAxisTicks(&axis, FvAxisTicks{true, 10.0, 20.0, 0.0});
+        CHECK(axis.min() == 10.0);
+        CHECK(axis.max() == 20.0);
+        CHECK(axis.tickInterval() == before);
+    }
 }
