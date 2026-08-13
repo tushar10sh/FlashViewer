@@ -23,10 +23,8 @@ class QComboBox;
 class QEvent;
 class QLabel;
 
-// Dockable Scan/Pixel Profile (Phase 26.2, FR-ANL-2/3). Was a free-floating QMainWindow;
-// it is now a QDockWidget payload for the same reason the Spectral Plot became one — the
-// user can park it left / right / bottom or leave it floating, and it is reached from
-// View → Panels like every other panel.
+// The Scan/Pixel Profile (FR-ANL-2/3): a top-level window on the same terms as the Spectral
+// Plot — above the main window, geometry remembered, closed until `P` or Tools opens it.
 //
 // Phase 26.5 gives it the Spectral Plot's scope bookkeeping (FR-ANL-12): the panel holds one
 // PLOT per COMPUTE SCOPE, not one curve for whatever happens to be active. A scope is the set

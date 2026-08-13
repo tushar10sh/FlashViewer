@@ -20,9 +20,10 @@ class FvChartView;
 class FvChartLegend;
 class QComboBox;
 
-// Dockable Spectral Plot (Phase 26, FR-ANL-1). Replaces the free-floating Spectral Plot
-// window: it is a QDockWidget payload, so the user can park it left / right / bottom or
-// leave it floating.
+// The Spectral Plot (FR-ANL-1): a top-level window parented to MainWindow, so it stays above
+// it without covering other applications, remembers its own geometry, and is closed until
+// `S` or Tools opens it. (It was a QDockWidget payload from Phase 26 until 26.8; SDD §5.5
+// records why that was undone.)
 //
 // The panel holds one PLOT per inspect SCOPE, not one per click. A scope is the exact set
 // of layers a single inspect gesture sampled — mirroring the Pixel Inspector's own left /
