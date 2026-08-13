@@ -276,7 +276,7 @@ FvChartLegend::FvChartLegend(QWidget* parent) : QWidget(parent) {
 
     auto* body = new QWidget(scroll);
     m_rows = new QVBoxLayout(body);
-    m_rows->setContentsMargins(4, 4, 4, 4);
+    m_rows->setContentsMargins(2, 2, 2, 2);
     m_rows->setSpacing(6);
     m_rows->addStretch(1);            // keep entries top-aligned
     scroll->setWidget(body);
@@ -290,6 +290,14 @@ FvChartLegend::FvChartLegend(QWidget* parent) : QWidget(parent) {
     setMinimumWidth(kLegendMinWidth);
     setMaximumWidth(kLegendMaxWidth);
     setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
+
+    // A legend is an annotation, not body text: at 90% it reads as subordinate to the plot and
+    // fits appreciably more of a file name per line, which is the whole difficulty here. Set on
+    // the legend, so every row inherits it and fvFitWords measures the size actually drawn.
+    QFont f = font();
+    if (f.pointSizeF() > 0.0)  f.setPointSizeF(f.pointSizeF() * 0.9);
+    else if (f.pixelSize() > 0) f.setPixelSize(qMax(1, qRound(f.pixelSize() * 0.9)));
+    setFont(f);
 }
 
 void FvChartLegend::setEntries(const QVector<FvLegendEntry>& entries) {
@@ -306,7 +314,7 @@ void FvChartLegend::changeEvent(QEvent* e) {
 int FvChartLegend::labelWidth() const {
     // What a row's label may occupy: the column, less its margins, the swatch and the gap.
     const int w = width() > 0 ? width() : kLegendMaxWidth;
-    return w - 8 /*body margins*/ - kFvCurveSwatchW - 6 /*row spacing*/ - 4;
+    return w - 4 /*body margins*/ - kFvCurveSwatchW - 6 /*row spacing*/ - 4;
 }
 
 void FvChartLegend::rebuild() {

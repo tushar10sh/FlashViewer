@@ -9,6 +9,7 @@
 #include "app/Settings.hpp"        // the persisted colour-scheme choice (FR-APP-6)
 
 #include <QtCharts/QChart>
+#include <QGraphicsLayout>
 #include <QtCharts/QLegend>
 #include <QtCharts/QLineSeries>
 #include <QtCharts/QValueAxis>
@@ -42,6 +43,13 @@ void SpectralPlotPanel::setupUi() {
 
     m_chart = new QChart();
     m_chart->setAnimationOptions(QChart::NoAnimation);
+    // QChart defaults to 20 px of margin on every side, on top of its own layout margins and
+    // a rounded background inset — ~80 px of the panel spent on nothing, most visibly as a gap
+    // between the plot and the legend beside it. These are chart PROPERTIES, so they survive
+    // the axis rebuild every render() performs; only the axes need re-doing there.
+    m_chart->setMargins(QMargins(4, 4, 4, 4));
+    m_chart->layout()->setContentsMargins(0, 0, 0, 0);
+    m_chart->setBackgroundRoundness(0);
     // QChart's own legend is retired (FR-ANL-9): it lays markers out horizontally, elides each
     // to one line, and draws a plain colour block that cannot show FR-ANL-8's dash patterns.
     m_chart->legend()->setVisible(false);
@@ -105,7 +113,7 @@ void SpectralPlotPanel::setupUi() {
     auto* plotArea = new QWidget(this);
     auto* plotLay  = new QHBoxLayout(plotArea);
     plotLay->setContentsMargins(0, 0, 0, 0);
-    plotLay->setSpacing(4);
+    plotLay->setSpacing(2);
     plotLay->addWidget(m_chart_view, 1);
     m_legend = new FvChartLegend(plotArea);
     connect(m_legend, &FvChartLegend::entryRenamed, this,
