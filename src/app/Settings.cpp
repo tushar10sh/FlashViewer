@@ -103,6 +103,16 @@ void Settings::setLegendCoords(bool on) {
     s.setValue(kLegendCoords, on);
 }
 
+QByteArray Settings::plotWindowGeometry(const QString& key) const {
+    QSettings s;
+    return s.value(QStringLiteral("plots/geometry/") + key).toByteArray();
+}
+
+void Settings::setPlotWindowGeometry(const QString& key, const QByteArray& data) {
+    QSettings s;
+    s.setValue(QStringLiteral("plots/geometry/") + key, data);
+}
+
 void Settings::saveGeometry(const QByteArray& data) {
     QSettings s;
     s.setValue(kGeometry, data);

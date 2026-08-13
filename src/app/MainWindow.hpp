@@ -138,9 +138,6 @@ private:
         Qt::DockWidgetArea area{Qt::LeftDockWidgetArea};
         QDockWidget*       tabWith{nullptr};   // re-tab partner, or nullptr
         QAction*           action{nullptr};    // its checkable menu item
-        // Docks whose fresh-build state is a floating window rather than a docked one
-        // (the Spectral Plot, Phase 26). `area` is still where a drag would park it.
-        bool               floating{false};
     };
     void buildPanelsMenu();
     void reopenDockToDefault(const DockEntry& e);
@@ -249,12 +246,14 @@ private:
     QStringList            m_pending_temp_deletions;
     bool                   m_temp_disposed{false};   // disposeTempFiles() runs once
 
-    // Spectral Plot (Phase 26): a dock the user can park anywhere, floating by default and
-    // hidden until `S` (or View → Panels) opens it.
+    // The two plots are top-level WINDOWS parented to this one (Phase 26.8), not docks: they
+    // float above the main window without covering other applications, are closed on a fresh
+    // profile, and are summoned by `S` / `P` or the Tools menu. Each remembers its own
+    // geometry (FR-APP-6) — QMainWindow::saveState no longer carries them.
     SpectralPlotPanel*     m_spectral_panel{nullptr};
-    QDockWidget*           m_spectral_dock{nullptr};
-    // Scan/Pixel Profile (Phase 26.2): a dock on the same terms as the Spectral Plot —
-    // floating and closed on a fresh profile, summoned by `P` / Tools.
     ScanPixProfilePanel*   m_profile_panel{nullptr};
-    QDockWidget*           m_profile_dock{nullptr};
+    /// Show, raise and focus a plot window, restoring its saved geometry the first time.
+    void showPlotWindow(QWidget* w, const QString& key);
+    // Their close handling lives in the existing eventFilter(): forget the plots, save the
+    // frame.
 };

@@ -14,7 +14,7 @@ public:
     // v5: GPU Monitor dock defaulted to the right column lower half.
     // v6: fixed that split so GPU Monitor actually lands below the Info/Inspector
     // group (split before tabbing Pixel Inspector), not as a third tab.
-    static constexpr int kCurrentLayoutVersion = 6;
+    static constexpr int kCurrentLayoutVersion = 7;   // 7: the two plot windows left the dock layout
 
     static Settings& instance();
 
@@ -53,6 +53,11 @@ public:
     // Default on; off collapses every entry to one line at once.
     bool legendCoords() const;
     void setLegendCoords(bool on);
+
+    // Geometry of the two plot WINDOWS (FR-ANL-1/2). They are no longer docks, so
+    // QMainWindow::saveState no longer carries them and each saves its own frame.
+    QByteArray plotWindowGeometry(const QString& key) const;
+    void       setPlotWindowGeometry(const QString& key, const QByteArray& data);
 
     void saveGeometry(const QByteArray& data);
     QByteArray loadGeometry() const;
