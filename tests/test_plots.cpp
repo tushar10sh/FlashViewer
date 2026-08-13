@@ -10,6 +10,7 @@
 
 #include "core/LayerManager.hpp"
 #include "core/RasterLayer.hpp"
+#include "app/Settings.hpp"
 #include "io/DatasetFactory.hpp"
 #include "plots/ScanPixProfilePanel.hpp"
 #include "widgets/ChartTools.hpp"
@@ -307,4 +308,35 @@ TEST_CASE("A hand-set axis range keeps min below max and reverses instead", "[pl
         CHECK(axis.max() == 20.0);
         CHECK(axis.tickInterval() == before);
     }
+}
+
+// The Coords toggle reaches the legend text, not just a flag. It shipped broken once: the
+// setting was stored and the panel re-rendered, but curveLabel() never consulted it, so every
+// entry kept its coordinates and only a manual test could tell.
+TEST_CASE("The coordinate toggle changes what a legend entry says", "[plots][TC-ANL-26]") {
+    FixtureFactory ff;
+    const auto fx = ff.gradientFloat(24, 24);
+    const bool saved = Settings::instance().legendCoords();
+
+    SECTION("on: the entry carries the sampled coordinates") {
+        Settings::instance().setLegendCoords(true);
+        PlotHarness h;                       // reads the setting as it builds its toolbar
+        auto a = h.add(fx.path, 1);
+        h.spectral.addInspectResult(kInX, kInY, "", groupsFor({a}), false);
+        REQUIRE(curveCount(h.spectral) == 1);
+        CHECK(legendOf(h.spectral)->entryText(0).contains(QLatin1Char('(')));
+    }
+
+    SECTION("off: the same entry is one line, and the layer name survives") {
+        Settings::instance().setLegendCoords(false);
+        PlotHarness h;
+        auto a = h.add(fx.path, 1);
+        h.spectral.addInspectResult(kInX, kInY, "", groupsFor({a}), false);
+        REQUIRE(curveCount(h.spectral) == 1);
+        const QString text = legendOf(h.spectral)->entryText(0);
+        CHECK_FALSE(text.contains(QChar::LineFeed));
+        CHECK(text.contains(QStringLiteral("grad")));
+    }
+
+    Settings::instance().setLegendCoords(saved);   // leave the user's setting as it was
 }

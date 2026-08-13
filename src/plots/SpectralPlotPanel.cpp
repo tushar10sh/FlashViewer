@@ -162,8 +162,9 @@ QString SpectralPlotPanel::curveLabel(const Curve& c) const {
     if (multiPane && !c.paneLabel.isEmpty()) out += c.paneLabel + QStringLiteral(" / ");
     out += name;
     // Newline, not a space: the legend label wraps the coordinates onto their own line
-    // (FR-ANL-9), so a long filename and a long coordinate pair never share one row.
-    if (!c.coord.isEmpty()) out += QStringLiteral("\n") + c.coord;
+    // (FR-ANL-9), so a long filename and a long coordinate pair never share one row. A rename
+    // never removes them — only the Coords toggle does, and then for every entry at once.
+    if (m_show_coords && !c.coord.isEmpty()) out += QStringLiteral("\n") + c.coord;
     return out;
 }
 

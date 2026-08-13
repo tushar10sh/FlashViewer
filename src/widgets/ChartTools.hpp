@@ -103,6 +103,12 @@ public:
     explicit FvChartLegend(QWidget* parent = nullptr);
     void setEntries(const QVector<FvLegendEntry>& entries);
     int  entryCount() const { return m_entries.size(); }
+    /// The text of row `index` as the owner supplied it (before elision). Empty when out of
+    /// range. Exists so what a legend actually SAYS is testable — a label built from the wrong
+    /// pieces looks fine to a row count.
+    QString entryText(int index) const {
+        return (index >= 0 && index < m_entries.size()) ? m_entries[index].text : QString();
+    }
 
 public slots:
     /// Ask the owner to delete the curve row `index` draws. The dialog applies its own
