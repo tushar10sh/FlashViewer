@@ -18,6 +18,8 @@
 //                     ~240 px column and the entries became unreadable.
 
 #include <QChartView>
+#include <QMargins>
+#include <QSplitter>
 #include <QHash>
 #include <QString>
 #include <QWidget>
@@ -77,6 +79,17 @@ private:
     bool    m_dragging{false};
 };
 
+/// What both charts set QChart::setMargins to. Qt defaults to 20 on every side, which spent
+/// ~80 px of the panel on nothing — most visibly as a gap between the plot and the legend. The
+/// RIGHT side keeps a little more than the rest: the splitter handle sits immediately there,
+/// and a plot flush against it reads as if it had been cut off.
+inline constexpr QMargins kFvChartMargins{4, 4, 10, 4};
+
+/// Legend type size, in points. Absolute rather than a fraction of the panel font so the two
+/// plots agree whatever the desktop is set to, and small because a legend annotates the plot
+/// rather than competing with it — the smaller face is also what lets a long file name fit.
+inline constexpr double kFvLegendPointSize = 7.5;
+
 /// Horizontal breathing room between the chart toolbar's icon cluster and each trailing
 /// control. Exported because the Scan/Pixel Profile separates its own controls by the same
 /// amount — one number, so the two panels cannot drift apart (FR-APP-15).
@@ -129,13 +142,9 @@ signals:
 
 protected:
     void changeEvent(QEvent* e) override;
-    /// Re-elides the entries: how much of a long name fits depends on the column's width.
-    void resizeEvent(QResizeEvent* e) override;
 
 private:
     void rebuild();
-    /// Width available to a row's label, in pixels.
-    int  labelWidth() const;
 
     QVBoxLayout*          m_rows{nullptr};
     QVector<FvLegendEntry> m_entries;
@@ -160,6 +169,26 @@ struct FvAxisTicks {
     bool   manual{false};
     double start{0.0}, end{0.0};
     double step{0.0};                  ///< 0 with manual=true ⇒ automatic tick spacing
+};
+
+/// Chart and legend side by side, with a divider the user can drag: the legend was capped at a
+/// constant width, so a wider window only ever grew the plot and a long entry stayed elided
+/// however much room there was. The cap becomes a fraction of the CONTAINER instead — the
+/// legend may take up to half, never more, so neither a long file name nor a stray drag can
+/// squeeze the plot to a sliver — and the divider's position is remembered per window.
+class FvChartSplitter : public QSplitter {
+    Q_OBJECT
+public:
+    /// `chartView` takes the stretch; `legend` keeps whatever the divider gives it.
+    FvChartSplitter(QWidget* chartView, FvChartLegend* legend, QWidget* parent = nullptr);
+
+protected:
+    /// Re-derives the legend's ceiling from the new width, and pulls the divider back inside it
+    /// when a shrink has left the legend over its share.
+    void resizeEvent(QResizeEvent* e) override;
+
+private:
+    FvChartLegend* m_legend{nullptr};
 };
 
 /// Apply a hand-set range/step to an axis. A no-op when `t.manual` is false, so a caller can

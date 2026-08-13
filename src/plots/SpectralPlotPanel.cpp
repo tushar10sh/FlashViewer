@@ -41,11 +41,10 @@ void SpectralPlotPanel::setupUi() {
 
     m_chart = new QChart();
     m_chart->setAnimationOptions(QChart::NoAnimation);
-    // QChart defaults to 20 px of margin on every side, on top of its own layout margins and
-    // a rounded background inset — ~80 px of the panel spent on nothing, most visibly as a gap
-    // between the plot and the legend beside it. These are chart PROPERTIES, so they survive
-    // the axis rebuild every render() performs; only the axes need re-doing there.
-    m_chart->setMargins(QMargins(4, 4, 4, 4));
+    // Qt's 20 px on every side, its own layout margins and a rounded background inset spent
+    // ~80 px of the panel on nothing. These are chart PROPERTIES, so they survive the axis
+    // rebuild every render() performs; only the axes need re-doing there.
+    m_chart->setMargins(kFvChartMargins);
     m_chart->layout()->setContentsMargins(0, 0, 0, 0);
     m_chart->setBackgroundRoundness(0);
     // QChart's own legend is retired (FR-ANL-9): it lays markers out horizontally, elides each
@@ -126,14 +125,10 @@ void SpectralPlotPanel::setupUi() {
     m_status->setWordWrap(true);
     lay->addWidget(m_status);
 
-    // Chart and legend live in ONE container, side by side, and that container is what Save
-    // renders — exporting the chart view alone would lose the legend entirely.
-    auto* plotArea = new QWidget(this);
-    auto* plotLay  = new QHBoxLayout(plotArea);
-    plotLay->setContentsMargins(0, 0, 0, 0);
-    plotLay->setSpacing(2);
-    plotLay->addWidget(m_chart_view, 1);
-    m_legend = new FvChartLegend(plotArea);
+    // Chart and legend live in ONE container, side by side with a divider the user can drag,
+    // and that container is what Save renders — exporting the chart view alone would lose the
+    // legend entirely.
+    m_legend = new FvChartLegend(this);
     connect(m_legend, &FvChartLegend::entryRenamed, this,
             [this](const QString& key, const QString& text) {
                 bool ok = false;
@@ -147,9 +142,9 @@ void SpectralPlotPanel::setupUi() {
             });
     connect(m_legend, &FvChartLegend::entryDeleted,
             this, &SpectralPlotPanel::deleteLegendRow);
-    plotLay->addWidget(m_legend, 0);
-    lay->addWidget(plotArea, 1);
-    toolbar->setExportWidget(plotArea);
+    m_split = new FvChartSplitter(m_chart_view, m_legend, this);
+    lay->addWidget(m_split, 1);
+    toolbar->setExportWidget(m_split);
 }
 
 QString SpectralPlotPanel::curveLabel(const Curve& c) const {
@@ -547,6 +542,14 @@ void SpectralPlotPanel::applyChartTheme() {
         ax->setLinePenColor(grid);
         ax->setGridLineColor(grid);
     }
+}
+
+QByteArray SpectralPlotPanel::saveSplitState() const {
+    return m_split ? m_split->saveState() : QByteArray();
+}
+
+void SpectralPlotPanel::restoreSplitState(const QByteArray& state) {
+    if (m_split && !state.isEmpty()) m_split->restoreState(state);
 }
 
 void SpectralPlotPanel::render() {

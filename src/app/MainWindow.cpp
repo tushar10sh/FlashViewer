@@ -1356,6 +1356,10 @@ void MainWindow::buildPanelsMenu() {
     });
 }
 
+// Suffix for the second half of a plot window's remembered layout: the chart/legend divider,
+// stored beside the frame under the same key family.
+static const QString kSplitSuffix = QStringLiteral("Split");
+
 void MainWindow::showPlotWindow(QWidget* w, const QString& key) {
     if (!w) return;
     // Restore the saved frame ONCE, on the first open of the session: doing it on every show
@@ -1363,6 +1367,13 @@ void MainWindow::showPlotWindow(QWidget* w, const QString& key) {
     if (w->property("fvGeometryRestored").isNull()) {
         const QByteArray geo = Settings::instance().plotWindowGeometry(key);
         if (!geo.isEmpty()) w->restoreGeometry(geo);
+        // The chart/legend divider travels with the frame: a divider that reset every launch
+        // would be worse than one that could not be dragged at all.
+        const QByteArray split = Settings::instance().plotWindowGeometry(key + kSplitSuffix);
+        if (!split.isEmpty()) {
+            if (auto* sp = qobject_cast<SpectralPlotPanel*>(w))        sp->restoreSplitState(split);
+            else if (auto* pp = qobject_cast<ScanPixProfilePanel*>(w)) pp->restoreSplitState(split);
+        }
         w->setProperty("fvGeometryRestored", true);
         w->setProperty("fvGeometryKey", key);
     }
@@ -1432,12 +1443,18 @@ void MainWindow::closeEvent(QCloseEvent* event) {
     Settings::instance().saveGeometry(saveGeometry());
     Settings::instance().saveState(saveState());
     // The plot windows are not part of saveState() any more, so each saves its own frame.
-    if (m_spectral_panel && m_spectral_panel->isVisible())
+    if (m_spectral_panel && m_spectral_panel->isVisible()) {
         Settings::instance().setPlotWindowGeometry(QStringLiteral("spectral"),
                                                    m_spectral_panel->saveGeometry());
-    if (m_profile_panel && m_profile_panel->isVisible())
+        Settings::instance().setPlotWindowGeometry(QStringLiteral("spectral") + kSplitSuffix,
+                                                   m_spectral_panel->saveSplitState());
+    }
+    if (m_profile_panel && m_profile_panel->isVisible()) {
         Settings::instance().setPlotWindowGeometry(QStringLiteral("profile"),
                                                    m_profile_panel->saveGeometry());
+        Settings::instance().setPlotWindowGeometry(QStringLiteral("profile") + kSplitSuffix,
+                                                   m_profile_panel->saveSplitState());
+    }
     if (auto* app = qobject_cast<Application*>(qApp))
         Settings::instance().setTheme(app->currentTheme());
     if (m_canvas && m_canvas->osmRenderer() && m_canvas->osmRenderer()->provider())
@@ -2133,8 +2150,13 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
         && (watched == m_spectral_panel || watched == m_profile_panel)) {
         auto* w = static_cast<QWidget*>(watched);
         const QVariant key = w->property("fvGeometryKey");
-        if (key.isValid())
+        if (key.isValid()) {
             Settings::instance().setPlotWindowGeometry(key.toString(), w->saveGeometry());
+            Settings::instance().setPlotWindowGeometry(key.toString() + kSplitSuffix,
+                                                       watched == m_spectral_panel
+                                                           ? m_spectral_panel->saveSplitState()
+                                                           : m_profile_panel->saveSplitState());
+        }
         if (watched == m_spectral_panel) m_spectral_panel->forgetAll();
         else                             m_profile_panel->forgetAll();
         return QMainWindow::eventFilter(watched, event);

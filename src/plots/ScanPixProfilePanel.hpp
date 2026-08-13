@@ -70,6 +70,11 @@ public:
     // was a statement about panes that move together.
     void dropMergedPlotsOutside(const QSet<quint64>& syncedPanes);
 
+    /// The chart/legend divider, saved with the window's geometry (FR-APP-6) — a divider that
+    /// reset on every launch would be worse than one that could not be dragged.
+    QByteArray saveSplitState() const;
+    void       restoreSplitState(const QByteArray& state);
+
 public slots:
     void compute();
     // Discard the plot on screen (and the scope it belongs to), leaving a blank chart.
@@ -177,6 +182,7 @@ private:
     QChart*        m_chart{nullptr};
     FvChartView*   m_chart_view{nullptr};
     FvChartLegend* m_legend{nullptr};
+    class FvChartSplitter* m_split{nullptr};
 
     // Label overrides (FR-ANL-10). Keyed by CURVE identity, not by position, so an edit
     // survives the next Compute replacing the curves; an empty entry never exists — clearing

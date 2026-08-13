@@ -61,6 +61,11 @@ public:
     // layers fall back to blank until inspected again.
     void dropMergedPlotsOutside(const QSet<quint64>& syncedPanes);
 
+    /// The chart/legend divider, saved with the window's geometry (FR-APP-6) — a divider that
+    /// reset on every launch would be worse than one that could not be dragged.
+    QByteArray saveSplitState() const;
+    void       restoreSplitState(const QByteArray& state);
+
 public slots:
     // Discard the plot on screen (and the scope it belongs to), leaving a blank chart.
     void clearCurrent();
@@ -142,6 +147,7 @@ private:
     QChart*       m_chart{nullptr};
     FvChartView*  m_chart_view{nullptr};
     FvChartLegend* m_legend{nullptr};
+    class FvChartSplitter* m_split{nullptr};
     QCheckBox*    m_persist{nullptr};
     QComboBox*    m_scheme{nullptr};
     QLabel*       m_status{nullptr};

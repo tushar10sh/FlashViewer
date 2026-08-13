@@ -134,11 +134,10 @@ void ScanPixProfilePanel::setupUi() {
     m_chart = new QChart();
     m_chart->setTitle(tr("Profile"));
     m_chart->setAnimationOptions(QChart::NoAnimation);
-    // QChart defaults to 20 px of margin on every side, on top of its own layout margins and
-    // a rounded background inset — ~80 px of the panel spent on nothing, most visibly as a gap
-    // between the plot and the legend beside it. These are chart PROPERTIES, so they survive
-    // the axis rebuild every render() performs; only the axes need re-doing there.
-    m_chart->setMargins(QMargins(4, 4, 4, 4));
+    // Qt's 20 px on every side, its own layout margins and a rounded background inset spent
+    // ~80 px of the panel on nothing. These are chart PROPERTIES, so they survive the axis
+    // rebuild every render() performs; only the axes need re-doing there.
+    m_chart->setMargins(kFvChartMargins);
     m_chart->layout()->setContentsMargins(0, 0, 0, 0);
     m_chart->setBackgroundRoundness(0);
     // QChart's own legend is retired in favour of the shared vertical one (FR-ANL-9).
@@ -208,14 +207,10 @@ void ScanPixProfilePanel::setupUi() {
 
     m_chart_view->setMinimumHeight(160);
 
-    // Chart + legend in one container, which is also what Save renders — see FvChartToolbar
-    // ::setExportWidget; exporting the view alone would drop the legend.
-    auto* plotArea = new QWidget(central);
-    auto* plotLay  = new QHBoxLayout(plotArea);
-    plotLay->setContentsMargins(0, 0, 0, 0);
-    plotLay->setSpacing(2);
-    plotLay->addWidget(m_chart_view, 1);
-    m_legend = new FvChartLegend(plotArea);
+    // Chart + legend in one container with a divider the user can drag, which is also what
+    // Save renders — see FvChartToolbar::setExportWidget; exporting the view alone would drop
+    // the legend.
+    m_legend = new FvChartLegend(central);
     connect(m_legend, &FvChartLegend::entryRenamed, this,
             [this](const QString& key, const QString& text) {
                 // Removing the key IS the reset: nothing stores an empty override, so the
@@ -226,9 +221,9 @@ void ScanPixProfilePanel::setupUi() {
             });
     connect(m_legend, &FvChartLegend::entryDeleted,
             this, &ScanPixProfilePanel::deleteLegendRow);
-    plotLay->addWidget(m_legend, 0);
-    mainLay->addWidget(plotArea, 1);
-    toolbar->setExportWidget(plotArea);
+    m_split = new FvChartSplitter(m_chart_view, m_legend, central);
+    mainLay->addWidget(m_split, 1);
+    toolbar->setExportWidget(m_split);
 
     applyChartTheme();
 }
@@ -773,6 +768,14 @@ void ScanPixProfilePanel::applyChartTheme() {
         ax->setLinePenColor(grid);
         ax->setGridLineColor(grid);
     }
+}
+
+QByteArray ScanPixProfilePanel::saveSplitState() const {
+    return m_split ? m_split->saveState() : QByteArray();
+}
+
+void ScanPixProfilePanel::restoreSplitState(const QByteArray& state) {
+    if (m_split && !state.isEmpty()) m_split->restoreState(state);
 }
 
 void ScanPixProfilePanel::render() {

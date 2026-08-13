@@ -340,3 +340,38 @@ TEST_CASE("The coordinate toggle changes what a legend entry says", "[plots][TC-
 
     Settings::instance().setLegendCoords(saved);   // leave the user's setting as it was
 }
+
+// The legend's width used to be a constant, so a bigger window only ever grew the plot and a
+// long entry stayed elided however much room there was. The ceiling is now half the container,
+// re-derived on every resize — a constant here would be the very cap this replaced.
+//
+// show() first: Qt defers a hidden widget's resize event until it is shown, so a test that only
+// calls resize() measures a splitter that has never had a resizeEvent at all.
+TEST_CASE("The legend may take up to half the container, never more", "[plots][TC-ANL-27]") {
+    auto* chart  = new QWidget;                 // stand-ins: the splitter cares about widths
+    auto* legend = new FvChartLegend;
+    FvChartSplitter split(chart, legend);
+    split.resize(1000, 400);
+    split.show();
+    PlotHarness::settle();
+    CHECK(legend->maximumWidth() == 500);       // half of 1000
+
+    split.resize(400, 400);
+    PlotHarness::settle();
+    CHECK(legend->maximumWidth() == 200);       // half of 400
+
+    // Below twice the floor the ceiling stops shrinking, or a narrow window would squeeze the
+    // legend into a column of single letters.
+    split.resize(200, 400);
+    PlotHarness::settle();
+    CHECK(legend->maximumWidth() == 150);
+
+    // A drag survives a round trip through the settings store.
+    split.resize(1000, 400);
+    PlotHarness::settle();
+    split.setSizes({700, 300});
+    const QByteArray state = split.saveState();
+    split.setSizes({900, 100});
+    split.restoreState(state);
+    CHECK(split.sizes().at(1) == 300);
+}

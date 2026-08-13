@@ -8,7 +8,6 @@
 
 #include <QApplication>
 #include <QEvent>
-#include <QFontMetrics>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QCheckBox>
@@ -30,6 +29,8 @@
 #include <QToolButton>
 #include <QResizeEvent>
 #include <QStringList>
+#include <QTextLayout>
+#include <QTextOption>
 #include <QSvgRenderer>
 #include <QVBoxLayout>
 #include <QWheelEvent>
@@ -174,29 +175,76 @@ void FvChartView::wheelEvent(QWheelEvent* e) {
 
 namespace {
 
-// Legend width bounds. The maximum is what keeps the row's buttons on screen (see the
-// constructor); the minimum keeps a two-line entry from becoming a column of single letters.
+// The legend's floor: below this a two-line entry becomes a column of single letters. There is
+// no constant ceiling any more — FvChartSplitter derives one from the container's width, so a
+// bigger window can be spent on the legend instead of only ever on the plot.
 constexpr int kLegendMinWidth = 150;
-constexpr int kLegendMaxWidth = 240;
+// What the divider starts at, i.e. the width the legend had when it was fixed.
+constexpr int kLegendStartWidth = 240;
+// Breathing room between the splitter handle and the first swatch.
+constexpr int kLegendLeftPad = 8;
 
-// Shorten any single WORD that cannot fit the column, leaving the rest intact. QLabel's word
-// wrap breaks at spaces only, so one long token — a file name is exactly that — would otherwise
-// set the row's width and be clipped without any sign that text is missing. Breaking inside the
-// name (an earlier attempt) wrapped `Landsat_TOA_BT_100m.tif` across three lines and made the
-// legend unreadable, which is the fault this replaces: an ellipsis says "shortened", a
-// mid-name break says nothing. The full text always remains in the tooltip.
-QString fvFitWords(const QString& text, const QFontMetrics& fm, int width) {
-    if (width <= 0) return text;
-    QStringList lines;
-    for (const QString& line : text.split(QChar::LineFeed)) {
-        QStringList words;
-        for (const QString& w : line.split(QLatin1Char(' ')))
-            words << (fm.horizontalAdvance(w) > width
-                          ? fm.elidedText(w, Qt::ElideRight, width) : w);
-        lines << words.join(QLatin1Char(' '));
+// A label that wraps like the rest of the entry — including INSIDE a word when a word is
+// wider than the column. `QLabel` cannot: its word wrap breaks at spaces only, so a file name,
+// which is one unbroken word, either set the row's width or had to be shortened with an
+// ellipsis. Since the coordinates already wrap onto their own line, clipping the name was the
+// odd one out; QTextLayout with WrapAtWordBoundaryOrAnywhere breaks at spaces first and only
+// falls back to mid-word when a single word cannot fit at all.
+class WrapLabel : public QWidget {
+public:
+    WrapLabel(const QString& text, QWidget* parent) : QWidget(parent), m_text(text) {
+        QSizePolicy sp(QSizePolicy::Ignored, QSizePolicy::Minimum);
+        sp.setHeightForWidth(true);
+        setSizePolicy(sp);
     }
-    return lines.join(QChar::LineFeed);
-}
+
+    bool hasHeightForWidth() const override { return true; }
+    int  heightForWidth(int w) const override { return layoutText(w, nullptr); }
+    QSize minimumSizeHint() const override {
+        const int w = width() > 0 ? width() : kLegendMinWidth;
+        return QSize(0, layoutText(w, nullptr));
+    }
+    QSize sizeHint() const override { return minimumSizeHint(); }
+
+protected:
+    void paintEvent(QPaintEvent*) override {
+        QPainter p(this);
+        p.setPen(palette().color(QPalette::WindowText));
+        layoutText(width(), &p);
+    }
+    void resizeEvent(QResizeEvent* e) override {
+        QWidget::resizeEvent(e);
+        // The row's height depends on how many lines the new width produces.
+        if (e->oldSize().width() != e->size().width()) updateGeometry();
+    }
+
+private:
+    // Lays the text out at `w` and returns the height it needs; draws it too when `p` is given,
+    // so measuring and painting can never disagree about where the lines fall.
+    int layoutText(int w, QPainter* p) const {
+        if (w <= 0) return 0;
+        QTextOption opt;
+        opt.setWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
+        qreal y = 0.0;
+        for (const QString& para : m_text.split(QChar::LineFeed)) {
+            QTextLayout tl(para, font());
+            tl.setTextOption(opt);
+            tl.beginLayout();
+            for (;;) {
+                QTextLine line = tl.createLine();
+                if (!line.isValid()) break;
+                line.setLineWidth(w);
+                line.setPosition(QPointF(0.0, y));
+                y += line.height();
+            }
+            tl.endLayout();
+            if (p) tl.draw(p, QPointF(0.0, 0.0));
+        }
+        return static_cast<int>(std::ceil(y));
+    }
+
+    QString m_text;
+};
 
 // The swatch is painted, not iconised: it has to show a pen STYLE, and QIcon would force a
 // pixmap regenerated on every theme and DPI change for no benefit.
@@ -229,7 +277,9 @@ FvChartLegend::FvChartLegend(QWidget* parent) : QWidget(parent) {
 
     auto* body = new QWidget(scroll);
     m_rows = new QVBoxLayout(body);
-    m_rows->setContentsMargins(2, 2, 2, 2);
+    // Wider on the LEFT: the splitter handle now sits immediately there, and a swatch flush
+    // against the divider reads as part of it rather than as the start of an entry.
+    m_rows->setContentsMargins(kLegendLeftPad, 2, 2, 2);
     m_rows->setSpacing(6);
     m_rows->addStretch(1);            // keep entries top-aligned
     scroll->setWidget(body);
@@ -241,15 +291,15 @@ FvChartLegend::FvChartLegend(QWidget* parent) : QWidget(parent) {
     // the legend then asked for hundreds of pixels, overran the panel, and pushed its own ✎
     // and 🗑 off the right-hand edge — with the horizontal scrollbar off, they simply vanished.
     setMinimumWidth(kLegendMinWidth);
-    setMaximumWidth(kLegendMaxWidth);
     setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
 
-    // A legend is an annotation, not body text: at 90% it reads as subordinate to the plot and
-    // fits appreciably more of a file name per line, which is the whole difficulty here. Set on
-    // the legend, so every row inherits it and fvFitWords measures the size actually drawn.
+    // A legend is an annotation, not body text: a fixed 7.5 pt reads as subordinate to the plot
+    // and fits appreciably more of a file name per line, which is the whole difficulty here.
+    // Absolute rather than a fraction of the panel font, so the two plots agree whatever the
+    // desktop's font size is. Set on the legend, so every row inherits it and each WrapLabel
+    // lays out at the size actually drawn.
     QFont f = font();
-    if (f.pointSizeF() > 0.0)  f.setPointSizeF(f.pointSizeF() * 0.9);
-    else if (f.pixelSize() > 0) f.setPixelSize(qMax(1, qRound(f.pixelSize() * 0.9)));
+    f.setPointSizeF(kFvLegendPointSize);
     setFont(f);
 }
 
@@ -264,21 +314,12 @@ void FvChartLegend::changeEvent(QEvent* e) {
     QWidget::changeEvent(e);
 }
 
-int FvChartLegend::labelWidth() const {
-    // What a row's label may occupy: the column, less its margins, the swatch and the gap.
-    const int w = width() > 0 ? width() : kLegendMaxWidth;
-    return w - 4 /*body margins*/ - kFvCurveSwatchW - 6 /*row spacing*/ - 4;
-}
-
 void FvChartLegend::rebuild() {
     while (m_rows->count() > 1) {                 // leave the trailing stretch
         QLayoutItem* it = m_rows->takeAt(0);
         if (it->widget()) it->widget()->deleteLater();
         delete it;
     }
-
-    const QFontMetrics fm(font());
-    const int avail = labelWidth();
 
     for (const FvLegendEntry& e : m_entries) {
         auto* row = new QWidget(this);
@@ -291,17 +332,11 @@ void FvChartLegend::rebuild() {
         // stop lining up with each other.
         lay->addWidget(sw, 0, Qt::AlignTop);
 
-        auto* label = new QLabel(fvFitWords(e.text, fm, avail), row);
-        label->setWordWrap(true);
+        // WrapLabel, not QLabel: nothing here may be clipped, and a file name has no spaces to
+        // break at. Its size policy is Ignored horizontally, so it takes what the row has left
+        // rather than demanding the width of its longest line.
+        auto* label = new WrapLabel(e.text, row);
         label->setToolTip(e.text);
-        label->setTextInteractionFlags(Qt::TextSelectableByMouse);
-        // Ignored horizontally: the label takes whatever the row has left rather than demanding
-        // its own preferred width — which, for a wrapping label, is its ONE-LINE width.
-        // heightForWidth must be re-armed by hand: setWordWrap() sets it on the policy, and
-        // assigning a fresh policy here would drop it, clipping a two-line entry to one.
-        QSizePolicy sp(QSizePolicy::Ignored, QSizePolicy::Minimum);
-        sp.setHeightForWidth(true);
-        label->setSizePolicy(sp);
         lay->addWidget(label, 1);
 
         m_rows->insertWidget(m_rows->count() - 1, row);
@@ -312,11 +347,35 @@ void FvChartLegend::deleteEntry(int index) {
     if (index >= 0 && index < m_entries.size()) emit entryDeleted(index);
 }
 
-void FvChartLegend::resizeEvent(QResizeEvent* e) {
-    QWidget::resizeEvent(e);
-    // The elision depends on the column's width, so a resize has to re-measure. Only on a
-    // WIDTH change: a vertical resize cannot alter what fits on a line.
-    if (e->oldSize().width() != e->size().width() && !m_entries.isEmpty()) rebuild();
+// ---------------------------------------------------------------------------
+// FvChartSplitter
+// ---------------------------------------------------------------------------
+
+FvChartSplitter::FvChartSplitter(QWidget* chartView, FvChartLegend* legend, QWidget* parent)
+    : QSplitter(Qt::Horizontal, parent), m_legend(legend) {
+    setHandleWidth(4);
+    // Neither side may be dragged to nothing: a collapsed legend looks like a bug, and a
+    // collapsed plot has nothing to annotate.
+    setChildrenCollapsible(false);
+    addWidget(chartView);
+    addWidget(legend);
+    setStretchFactor(0, 1);          // a window resize grows the PLOT
+    setStretchFactor(1, 0);          // the legend keeps whatever the divider gave it
+    setSizes({600, kLegendStartWidth});
+}
+
+void FvChartSplitter::resizeEvent(QResizeEvent* e) {
+    QSplitter::resizeEvent(e);
+    if (!m_legend) return;
+    // Half the container, never less than the floor. Derived on every resize rather than set
+    // once: a constant is exactly the cap this replaces.
+    const int cap = std::max(kLegendMinWidth, width() / 2);
+    m_legend->setMaximumWidth(cap);
+    // A shrink can leave the divider outside the new ceiling; pull it back rather than let the
+    // legend hold a share the window no longer has.
+    const QList<int> now = sizes();
+    if (now.size() == 2 && now[1] > cap)
+        setSizes({std::max(0, width() - cap - handleWidth()), cap});
 }
 
 // ---------------------------------------------------------------------------
