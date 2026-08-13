@@ -77,6 +77,33 @@ void SpectralPlotPanel::setupUi() {
     });
     toolbar->addTrailingWidget(m_scheme);
 
+    // Grid and coordinates are plot PROPERTIES, so they sit with the scheme selector rather
+    // than in a menu, and they persist for the same reason it does (FR-APP-6).
+    m_grid = Settings::instance().plotGrid();
+    auto* gridBox = new FvTickCheckBox(tr("Grid"), this);
+    gridBox->setChecked(m_grid);
+    gridBox->setToolTip(tr("Draw the horizontal and vertical grid lines"));
+    connect(gridBox, &QCheckBox::toggled, this, [this](bool on) {
+        m_grid = on;
+        Settings::instance().setPlotGrid(on);
+        render();
+    });
+    toolbar->addTrailingWidget(gridBox);
+
+    // One toggle for EVERY entry: a legend of ten curves is ten coordinate pairs, which is
+    // most of the column's text and none of what tells the curves apart when they all come
+    // from one click.
+    m_show_coords = Settings::instance().legendCoords();
+    auto* coordBox = new FvTickCheckBox(tr("Coords"), this);
+    coordBox->setChecked(m_show_coords);
+    coordBox->setToolTip(tr("Show the sampled coordinates under each legend entry"));
+    connect(coordBox, &QCheckBox::toggled, this, [this](bool on) {
+        m_show_coords = on;
+        Settings::instance().setLegendCoords(on);
+        render();
+    });
+    toolbar->addTrailingWidget(coordBox);
+
     // Off by default: a click replaces the scope's curves, exactly like the Pixel Inspector
     // table replaces its rows. Ticking it keeps earlier pixels so several can be compared.
     // FvTickCheckBox, the same outlined-box-with-a-stroked-tick the "Override No-Data"

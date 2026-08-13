@@ -45,6 +45,15 @@ public:
     int  curveColorScheme() const;
     void setCurveColorScheme(int scheme);
 
+    // Plot grid lines, both plots (FR-ANL-14). Default on.
+    bool plotGrid() const;
+    void setPlotGrid(bool on);
+
+    // Whether a Spectral Plot legend entry carries the sampled coordinates (FR-ANL-9).
+    // Default on; off collapses every entry to one line at once.
+    bool legendCoords() const;
+    void setLegendCoords(bool on);
+
     void saveGeometry(const QByteArray& data);
     QByteArray loadGeometry() const;
 

@@ -12,6 +12,8 @@ static constexpr const char* kDisplayResampling = "render/displayResampling";
 static constexpr const char* kLogExportDir       = "log/exportDir";
 static constexpr const char* kPerfHudVisible     = "perf/hudVisible";
 static constexpr const char* kCurveColorScheme   = "plots/curveColorScheme";
+static constexpr const char* kPlotGrid           = "plots/grid";
+static constexpr const char* kLegendCoords       = "plots/legendCoords";
 
 Settings::Settings() = default;
 
@@ -79,6 +81,26 @@ int Settings::curveColorScheme() const {
 void Settings::setCurveColorScheme(int scheme) {
     QSettings s;
     s.setValue(kCurveColorScheme, scheme);
+}
+
+bool Settings::plotGrid() const {
+    QSettings s;
+    return s.value(kPlotGrid, true).toBool();
+}
+
+void Settings::setPlotGrid(bool on) {
+    QSettings s;
+    s.setValue(kPlotGrid, on);
+}
+
+bool Settings::legendCoords() const {
+    QSettings s;
+    return s.value(kLegendCoords, true).toBool();
+}
+
+void Settings::setLegendCoords(bool on) {
+    QSettings s;
+    s.setValue(kLegendCoords, on);
 }
 
 void Settings::saveGeometry(const QByteArray& data) {

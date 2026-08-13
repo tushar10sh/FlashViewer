@@ -156,6 +156,9 @@ private:
     // of captureHome() running after the axes are built.
     FvAxisTicks             m_x_ticks, m_y_ticks;
     bool                    m_grid{true};
+    // Persisted (FR-APP-6): whether an entry carries its sampled coordinates. Off collapses
+    // every entry to one line, which is what a ten-curve legend usually wants.
+    bool                    m_show_coords{true};
 
     // Legend row → index into m_current->curves, rebuilt by every render(). A curve whose
     // every band is no-data draws nothing and gets no legend row, so the two are not the same

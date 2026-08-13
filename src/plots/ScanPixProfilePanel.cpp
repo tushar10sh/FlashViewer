@@ -169,6 +169,20 @@ void ScanPixProfilePanel::setupUi() {
     });
     toolbar->addTrailingWidget(m_scheme);
 
+    // The same persisted grid toggle the Spectral Plot carries (FR-APP-15). There is no
+    // Coords toggle here: a profile's second legend line is its mode and statistic, which is
+    // what tells a Mean from a Median.
+    m_grid = Settings::instance().plotGrid();
+    auto* gridBox = new FvTickCheckBox(tr("Grid"), central);
+    gridBox->setChecked(m_grid);
+    gridBox->setToolTip(tr("Draw the horizontal and vertical grid lines"));
+    connect(gridBox, &QCheckBox::toggled, this, [this](bool on) {
+        m_grid = on;
+        Settings::instance().setPlotGrid(on);
+        render();
+    });
+    toolbar->addTrailingWidget(gridBox);
+
     // Off by default: Compute replaces the scope's curves. Ticking it grows the plot on
     // screen instead, so several layers — or several statistics of one layer — can be
     // compared (FR-ANL-12).
