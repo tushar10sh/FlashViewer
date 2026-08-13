@@ -6,8 +6,12 @@
 #include <QtCharts/QChart>
 #include <QtCharts/QValueAxis>
 
+#include <QAction>
 #include <QApplication>
+#include <QContextMenuEvent>
 #include <QEvent>
+#include <QFontMetrics>
+#include <QMenu>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QDialog>
@@ -24,11 +28,15 @@
 #include <QSaveFile>
 #include <QSvgGenerator>
 #include <QScrollArea>
+#include <QResizeEvent>
+#include <QStringList>
 #include <QSvgRenderer>
 #include <QVBoxLayout>
 #include <QWheelEvent>
 
 #include <cmath>
+#include <functional>
+#include <utility>
 
 // ---------------------------------------------------------------------------
 // FvChartView
@@ -160,11 +168,66 @@ void FvChartView::wheelEvent(QWheelEvent* e) {
     e->accept();
 }
 
+void FvChartView::contextMenuEvent(QContextMenuEvent* e) {
+    // QChart paints its title and axis titles itself — there are no scene items to pick — so
+    // the hit test is the BAND each label lives in, measured off the plot area:
+    //   above it            → the plot title
+    //   below it, outer half→ the X axis title (the inner half is the tick labels)
+    //   left of it, outer   → the Y axis title
+    // A click inside the plot area, or on the tick labels, falls through to the base class:
+    // the menu names one label, so it must not appear where no label is.
+    if (!chart()) { QChartView::contextMenuEvent(e); return; }
+    const QRectF plot = chart()->plotArea();
+    if (plot.isEmpty()) { QChartView::contextMenuEvent(e); return; }
+    const QPointF p = e->pos();
+
+    bool hit = false;
+    FvChartLabel which = FvChartLabel::Title;
+    if (p.y() < plot.top()) {
+        hit = true;                                    // the band above holds only the title
+    } else if (p.y() > plot.bottom()) {
+        const double band = rect().bottom() - plot.bottom();
+        hit = band > 0 && p.y() > plot.bottom() + band * 0.5;
+        which = FvChartLabel::XAxis;
+    } else if (p.x() < plot.left()) {
+        hit = p.x() < plot.left() * 0.5;
+        which = FvChartLabel::YAxis;
+    }
+    if (!hit) { QChartView::contextMenuEvent(e); return; }
+
+    emit labelContextMenuRequested(which, e->globalPos());
+    e->accept();
+}
+
 // ---------------------------------------------------------------------------
 // FvChartLegend
 // ---------------------------------------------------------------------------
 
 namespace {
+
+// Legend width bounds. The maximum is what keeps the row's buttons on screen (see the
+// constructor); the minimum keeps a two-line entry from becoming a column of single letters.
+constexpr int kLegendMinWidth = 150;
+constexpr int kLegendMaxWidth = 240;
+
+// Shorten any single WORD that cannot fit the column, leaving the rest intact. QLabel's word
+// wrap breaks at spaces only, so one long token — a file name is exactly that — would otherwise
+// set the row's width and be clipped without any sign that text is missing. Breaking inside the
+// name (an earlier attempt) wrapped `Landsat_TOA_BT_100m.tif` across three lines and made the
+// legend unreadable, which is the fault this replaces: an ellipsis says "shortened", a
+// mid-name break says nothing. The full text always remains in the tooltip.
+QString fvFitWords(const QString& text, const QFontMetrics& fm, int width) {
+    if (width <= 0) return text;
+    QStringList lines;
+    for (const QString& line : text.split(QChar::LineFeed)) {
+        QStringList words;
+        for (const QString& w : line.split(QLatin1Char(' ')))
+            words << (fm.horizontalAdvance(w) > width
+                          ? fm.elidedText(w, Qt::ElideRight, width) : w);
+        lines << words.join(QLatin1Char(' '));
+    }
+    return lines.join(QChar::LineFeed);
+}
 
 // The swatch is painted, not iconised: it has to show a pen STYLE, and QIcon would force a
 // pixmap regenerated on every theme and DPI change for no benefit.
@@ -182,6 +245,22 @@ protected:
 private:
     QColor       m_color;
     Qt::PenStyle m_style;
+};
+
+// One legend row. It exists as a class only for its context menu: Edit and Delete are reached
+// by right-clicking the entry, and a plain QWidget has no way to report that with its index.
+class LegendRow : public QWidget {
+public:
+    LegendRow(int index, std::function<void(int, QPoint)> onMenu, QWidget* parent)
+        : QWidget(parent), m_index(index), m_on_menu(std::move(onMenu)) {}
+protected:
+    void contextMenuEvent(QContextMenuEvent* e) override {
+        if (m_on_menu) m_on_menu(m_index, e->globalPos());
+        e->accept();
+    }
+private:
+    int m_index{-1};
+    std::function<void(int, QPoint)> m_on_menu;
 };
 
 }  // namespace
@@ -203,13 +282,14 @@ FvChartLegend::FvChartLegend(QWidget* parent) : QWidget(parent) {
     scroll->setWidget(body);
     outer->addWidget(scroll);
 
-    // Wide enough for a wrapped "«pane» / «layer»" line without swallowing the plot; the
-    // panel can still shrink it, at which point the labels simply wrap onto more lines.
-    setMinimumWidth(150);
+    // Wide enough for a wrapped "«pane» / «layer»" line without swallowing the plot, and
+    // CAPPED so it cannot claim more. Without the cap a row's preferred width is the label's
+    // one-line width, which for a legend entry is the whole "Pane 1 / file.tif (x, y)" string:
+    // the legend then asked for hundreds of pixels, overran the panel, and pushed its own ✎
+    // and 🗑 off the right-hand edge — with the horizontal scrollbar off, they simply vanished.
+    setMinimumWidth(kLegendMinWidth);
+    setMaximumWidth(kLegendMaxWidth);
     setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
-    // A "Pane 1 / some_long_filename.tif" line wraps to two rows at this width; the panel's
-    // layout still lets the user's dock size win.
-    resize(210, height());
 }
 
 void FvChartLegend::setEntries(const QVector<FvLegendEntry>& entries) {
@@ -223,6 +303,12 @@ void FvChartLegend::changeEvent(QEvent* e) {
     QWidget::changeEvent(e);
 }
 
+int FvChartLegend::labelWidth() const {
+    // What a row's label may occupy: the column, less its margins, the swatch and the gap.
+    const int w = width() > 0 ? width() : kLegendMaxWidth;
+    return w - 8 /*body margins*/ - kFvCurveSwatchW - 6 /*row spacing*/ - 4;
+}
+
 void FvChartLegend::rebuild() {
     while (m_rows->count() > 1) {                 // leave the trailing stretch
         QLayoutItem* it = m_rows->takeAt(0);
@@ -230,11 +316,12 @@ void FvChartLegend::rebuild() {
         delete it;
     }
 
-    const bool isDark = QApplication::palette().window().color().lightness() < 128;
-    const QString sfx = isDark ? QStringLiteral("_dark") : QStringLiteral("_light");
+    const QFontMetrics fm(font());
+    const int avail = labelWidth();
 
-    for (const FvLegendEntry& e : m_entries) {
-        auto* row = new QWidget(this);
+    for (int i = 0; i < m_entries.size(); ++i) {
+        const FvLegendEntry& e = m_entries[i];
+        auto* row = new LegendRow(i, [this](int idx, QPoint gp) { showRowMenu(idx, gp); }, this);
         auto* lay = new QHBoxLayout(row);
         lay->setContentsMargins(0, 0, 0, 0);
         lay->setSpacing(6);
@@ -244,76 +331,81 @@ void FvChartLegend::rebuild() {
         // stop lining up with each other.
         lay->addWidget(sw, 0, Qt::AlignTop);
 
-        auto* label = new QLabel(e.text, row);
+        auto* label = new QLabel(fvFitWords(e.text, fm, avail), row);
         label->setWordWrap(true);
+        label->setToolTip(e.text + QChar::LineFeed
+                          + tr("Right-click to rename or remove this curve"));
         label->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        // Ignored horizontally: the label takes whatever the row has left rather than demanding
+        // its own preferred width — which, for a wrapping label, is its ONE-LINE width.
+        // heightForWidth must be re-armed by hand: setWordWrap() sets it on the policy, and
+        // assigning a fresh policy here would drop it, clipping a two-line entry to one.
+        QSizePolicy sp(QSizePolicy::Ignored, QSizePolicy::Minimum);
+        sp.setHeightForWidth(true);
+        label->setSizePolicy(sp);
         lay->addWidget(label, 1);
-
-        if (e.renamable) {
-            auto* pencil = new SvgIconButton(row);
-            pencil->setFixedSize(20, 20);
-            pencil->setSvgPath(":/icons/pencil" + sfx + ".svg");
-            pencil->setToolTip(tr("Rename this entry (clear the text to restore the default)"));
-            const QString key = e.key;
-            const QString cur = e.text;
-            connect(pencil, &SvgIconButton::clicked, this, [this, key, cur] {
-                bool ok = false;
-                // A single-line editor deliberately: the wrap in the legend is automatic, so
-                // a user typing newlines would be fighting it.
-                const QString text = QInputDialog::getText(
-                    this, tr("Rename Legend Entry"),
-                    tr("Label (leave empty to restore the default):"),
-                    QLineEdit::Normal, QString(cur).replace(QLatin1Char('\n'),
-                                                            QLatin1Char(' ')), &ok);
-                if (ok) emit entryRenamed(key, text.trimmed());
-            });
-            lay->addWidget(pencil, 0, Qt::AlignTop);
-        }
 
         m_rows->insertWidget(m_rows->count() - 1, row);
     }
 }
 
+void FvChartLegend::deleteEntry(int index) {
+    if (index >= 0 && index < m_entries.size()) emit entryDeleted(index);
+}
+
+void FvChartLegend::showRowMenu(int index, const QPoint& globalPos) {
+    if (index < 0 || index >= m_entries.size()) return;
+    const FvLegendEntry& e = m_entries[index];
+    if (!e.renamable && !e.deletable) return;
+
+    QMenu menu(this);
+    QAction* rename = e.renamable ? menu.addAction(tr("Edit Label…")) : nullptr;
+    QAction* remove = e.deletable ? menu.addAction(tr("Delete Curve")) : nullptr;
+    QAction* chosen = menu.exec(globalPos);
+    if (!chosen) return;
+    if (chosen == rename) promptRename(index);
+    // Deleting rebuilds the legend, so nothing here may touch m_entries afterwards.
+    else if (chosen == remove) emit entryDeleted(index);
+}
+
+void FvChartLegend::promptRename(int index) {
+    if (index < 0 || index >= m_entries.size()) return;
+    const QString key = m_entries[index].key;
+    // A single-line editor deliberately: the wrap in the legend is automatic, so a user typing
+    // newlines would be fighting it.
+    const QString cur = QString(m_entries[index].text).replace(QChar::LineFeed,
+                                                               QLatin1Char(' '));
+    bool ok = false;
+    const QString text = QInputDialog::getText(
+        this, tr("Rename Legend Entry"), tr("Label (leave empty to restore the default):"),
+        QLineEdit::Normal, cur, &ok);
+    if (ok) emit entryRenamed(key, text.trimmed());
+}
+
+void FvChartLegend::resizeEvent(QResizeEvent* e) {
+    QWidget::resizeEvent(e);
+    // The elision depends on the column's width, so a resize has to re-measure. Only on a
+    // WIDTH change: a vertical resize cannot alter what fits on a line.
+    if (e->oldSize().width() != e->size().width() && !m_entries.isEmpty()) rebuild();
+}
+
 // ---------------------------------------------------------------------------
-// fvEditChartLabels
+// fvPromptChartLabel
 // ---------------------------------------------------------------------------
 
-bool fvEditChartLabels(QWidget* parent, FvChartLabels& labels, const FvChartLabels& defaults) {
-    QDialog dlg(parent);
-    dlg.setWindowTitle(QObject::tr("Edit Plot Labels"));
-
-    auto* form = new QFormLayout();
-    auto mkEdit = [&](const QString& value, const QString& placeholder) {
-        auto* e = new QLineEdit(value, &dlg);
-        // The automatic text as placeholder: it shows what clearing the field restores, so
-        // Reset needs no separate button and cannot get out of step with the real default.
-        e->setPlaceholderText(placeholder);
-        e->setMinimumWidth(320);
-        return e;
-    };
-    auto* title = mkEdit(labels.title,  defaults.title);
-    auto* xEdit = mkEdit(labels.xTitle, defaults.xTitle);
-    auto* yEdit = mkEdit(labels.yTitle, defaults.yTitle);
-    form->addRow(QObject::tr("Title:"),  title);
-    form->addRow(QObject::tr("X axis:"), xEdit);
-    form->addRow(QObject::tr("Y axis:"), yEdit);
-
-    auto* note = new QLabel(QObject::tr("Leave a field empty to use the automatic text."), &dlg);
-    note->setWordWrap(true);
-
-    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
-    QObject::connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
-    QObject::connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
-
-    auto* lay = new QVBoxLayout(&dlg);
-    lay->addLayout(form);
-    lay->addWidget(note);
-    lay->addWidget(buttons);
-
-    if (dlg.exec() != QDialog::Accepted) return false;
-    labels.title  = title->text().trimmed();
-    labels.xTitle = xEdit->text().trimmed();
-    labels.yTitle = yEdit->text().trimmed();
+bool fvPromptChartLabel(QWidget* parent, const QString& what, const QString& automatic,
+                        QString& current) {
+    bool ok = false;
+    // The automatic text goes in the PROMPT, not in a placeholder: QInputDialog has no
+    // placeholder, and without it "leave empty to restore the default" does not say what the
+    // default is.
+    const QString prompt = automatic.isEmpty()
+        ? QObject::tr("%1 (leave empty to restore the default):").arg(what)
+        : QObject::tr("%1 (leave empty to restore “%2”):").arg(what, automatic);
+    const QString text = QInputDialog::getText(parent, QObject::tr("Edit %1").arg(what),
+                                               prompt, QLineEdit::Normal, current, &ok);
+    if (!ok) return false;
+    current = text.trimmed();
     return true;
 }
 
@@ -368,12 +460,11 @@ FvChartToolbar::FvChartToolbar(FvChartView* chartView, QWidget* parent)
     m_hand->setToolTip(tr("Drag the plot to pan · scroll to zoom"));
     m_layout->addWidget(m_hand);
 
-    m_edit = mkButton(tr("Edit the plot title and axis titles…"));
     m_save = mkButton(tr("Save the plot…"));
 
     // The icon cluster is one group and stays tight (spacing 2); everything a panel appends
     // after it is a separate control, so it gets real breathing room — see addTrailingWidget.
-    m_layout->addSpacing(kTrailingGap);
+    m_layout->addSpacing(kFvChartTrailingGap);
 
     if (m_view) {
         connect(m_zoom_in,  &SvgIconButton::clicked, m_view, &FvChartView::zoomIn);
@@ -384,7 +475,6 @@ FvChartToolbar::FvChartToolbar(FvChartView* chartView, QWidget* parent)
         m_home->setEnabled(false);
     }
     connect(m_save, &SvgIconButton::clicked, this, &FvChartToolbar::save);
-    connect(m_edit, &SvgIconButton::clicked, this, &FvChartToolbar::editLabelsRequested);
 
     refreshIcons();
 }
@@ -397,7 +487,7 @@ void FvChartToolbar::addTrailingWidget(QWidget* w) {
     if (!w) return;
     // A gap BETWEEN trailing controls, not just before the first: a combo, a checkbox and a
     // push button butted together at the icon row's 2 px read as one crowded strip.
-    if (m_has_trailing) m_layout->addSpacing(kTrailingGap);
+    if (m_has_trailing) m_layout->addSpacing(kFvChartTrailingGap);
     m_layout->addWidget(w);
     m_has_trailing = true;
 }
@@ -409,7 +499,6 @@ void FvChartToolbar::refreshIcons() {
     m_zoom_out->setSvgPath(":/icons/zoom_out" + sfx + ".svg");
     m_home->setSvgPath(":/icons/home"        + sfx + ".svg");
     m_save->setSvgPath(":/icons/save"        + sfx + ".svg");
-    m_edit->setSvgPath(":/icons/pencil"      + sfx + ".svg");
     m_hand->setPixmap(renderSvg(":/icons/hand" + sfx + ".svg", 18, devicePixelRatioF()));
 }
 

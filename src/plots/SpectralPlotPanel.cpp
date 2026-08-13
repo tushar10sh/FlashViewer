@@ -14,8 +14,10 @@
 #include <QtCharts/QValueAxis>
 
 #include <QApplication>
+#include <QAction>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QMenu>
 #include <QEvent>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -52,7 +54,14 @@ void SpectralPlotPanel::setupUi() {
     auto* toolbar = new FvChartToolbar(m_chart_view, this);
     toolbar->setSuggestedName(QStringLiteral("spectral_plot"));
     toolbar->setCsvProvider([this] { return curvesAsCsv(); });
-    connect(toolbar, &FvChartToolbar::editLabelsRequested, this, &SpectralPlotPanel::editLabels);
+    // Labels are edited by right-clicking them (FR-ANL-10): the chart view hit-tests the
+    // title / axis-title bands, the panel names the label and offers the one action.
+    connect(m_chart_view, &FvChartView::labelContextMenuRequested, this,
+            [this](FvChartLabel which, const QPoint& globalPos) {
+                QMenu menu(this);
+                QAction* edit = menu.addAction(tr("Edit Label…"));
+                if (menu.exec(globalPos) == edit) editLabel(which);
+            });
 
     // Pane hue (the default) or the original fixed palette — a plot property, so it lives on
     // the toolbar rather than in a preferences dialog, but it persists (FR-APP-6).
@@ -110,6 +119,8 @@ void SpectralPlotPanel::setupUi() {
                 else                m_name_override.insert(id, text);
                 render();
             });
+    connect(m_legend, &FvChartLegend::entryDeleted,
+            this, &SpectralPlotPanel::deleteLegendRow);
     plotLay->addWidget(m_legend, 0);
     lay->addWidget(plotArea, 1);
     toolbar->setExportWidget(plotArea);
@@ -117,8 +128,12 @@ void SpectralPlotPanel::setupUi() {
 
 QString SpectralPlotPanel::curveLabel(const Curve& c) const {
     const QString name = m_name_override.value(c.layerId, c.layerName);
+    // The pane prefix is decided HERE, not stamped into the curve: Persist can add a second
+    // pane to a plot after this curve was sampled, and every curve must then say which pane
+    // it came from.
+    const bool multiPane = m_current && m_current->panes.size() > 1;
     QString out;
-    if (!c.paneLabel.isEmpty()) out += c.paneLabel + QStringLiteral(" / ");
+    if (multiPane && !c.paneLabel.isEmpty()) out += c.paneLabel + QStringLiteral(" / ");
     out += name;
     // Newline, not a space: the legend label wraps the coordinates onto their own line
     // (FR-ANL-9), so a long filename and a long coordinate pair never share one row.
@@ -132,15 +147,29 @@ void SpectralPlotPanel::defaultLabels(QString& title, QString& x, QString& y) co
     y = tr("Value");
 }
 
-void SpectralPlotPanel::editLabels() {
+void SpectralPlotPanel::editLabel(FvChartLabel which) {
     QString dt, dx, dy;
     defaultLabels(dt, dx, dy);
-    FvChartLabels labels{ m_current ? m_current->titleOverride : QString(),
-                          m_x_override, m_y_override };
-    if (!fvEditChartLabels(this, labels, FvChartLabels{dt, dx, dy})) return;
-    if (m_current) m_current->titleOverride = labels.title;
-    m_x_override = labels.xTitle;
-    m_y_override = labels.yTitle;
+    switch (which) {
+        case FvChartLabel::Title: {
+            // Nothing to title yet: a blank chart's heading is the activated layer's name, and
+            // an override would then outlive the plot it was written for.
+            if (!m_current) return;
+            QString v = m_current->titleOverride;
+            if (fvPromptChartLabel(this, tr("Plot Title"), dt, v)) m_current->titleOverride = v;
+            break;
+        }
+        case FvChartLabel::XAxis: {
+            QString v = m_x_override;
+            if (fvPromptChartLabel(this, tr("X Axis Title"), dx, v)) m_x_override = v;
+            break;
+        }
+        case FvChartLabel::YAxis: {
+            QString v = m_y_override;
+            if (fvPromptChartLabel(this, tr("Y Axis Title"), dy, v)) m_y_override = v;
+            break;
+        }
+    }
     render();
 }
 
@@ -221,17 +250,36 @@ void SpectralPlotPanel::detachLayer(quint64 layerId) {
 // are drawn: a single layer by name, one pane's merge by pane, a sync-group merge by the
 // panes it spans plus the left/right-click layer rule.
 static QString buildTitle(const QStringList& paneLabels, bool allLayers, int curveCount,
-                          const QString& soleLayerName, const QString& solePaneLabel) {
+                          const QString& soleLayerName, const QString& solePaneLabel,
+                          bool syncMerge) {
     if (curveCount == 1)
         return solePaneLabel.isEmpty() ? soleLayerName
                                        : SpectralPlotPanel::tr("%1 — %2")
                                              .arg(soleLayerName, solePaneLabel);
-    if (paneLabels.size() == 1)
-        return allLayers ? SpectralPlotPanel::tr("%1 — all layers").arg(paneLabels.front())
-                         : SpectralPlotPanel::tr("%1 — topmost layers").arg(paneLabels.front());
+    if (paneLabels.size() <= 1) {
+        const QString pane = paneLabels.isEmpty() ? QString() : paneLabels.front();
+        if (pane.isEmpty()) return SpectralPlotPanel::tr("%n curve(s)", "", curveCount);
+        return allLayers ? SpectralPlotPanel::tr("%1 — all layers").arg(pane)
+                         : SpectralPlotPanel::tr("%1 — topmost layers").arg(pane);
+    }
+    // "Synced" only when ONE gesture spanned the panes. Persist can put two UNSYNCED panes on
+    // one chart (FR-ANL-5), and calling that synced would state something untrue about the
+    // panes rather than about the curves.
     const QString panes = paneLabels.join(QStringLiteral(", "));
+    if (!syncMerge) return SpectralPlotPanel::tr("%1 — %n curve(s)", "", curveCount).arg(panes);
     return allLayers ? SpectralPlotPanel::tr("Synced %1 — all layers").arg(panes)
                      : SpectralPlotPanel::tr("Synced %1 — topmost layers").arg(panes);
+}
+
+void SpectralPlotPanel::retitle(const PlotPtr& p) {
+    if (!p || p->curves.isEmpty()) return;
+    QStringList paneLabels;
+    for (const Curve& c : p->curves)
+        if (!c.paneLabel.isEmpty() && !paneLabels.contains(c.paneLabel))
+            paneLabels.push_back(c.paneLabel);
+    p->title = buildTitle(paneLabels, p->allLayers, p->curves.size(),
+                          p->curves.front().layerName, p->curves.front().paneLabel,
+                          p->syncMerge);
 }
 
 void SpectralPlotPanel::addInspectResult(double gx, double gy, const std::string& geoWkt,
@@ -276,33 +324,46 @@ void SpectralPlotPanel::addInspectResult(double gx, double gy, const std::string
     QSet<quint64> members;
     for (const auto& h : hits) members.insert(h.layerId);
 
-    // Re-use the plot when the scope is identical (so "Persist curves" accumulates pixels of
-    // the same selection); otherwise the sampled layers leave their old plots and form a new
-    // one — the most recent gesture owns them.
+    const bool persist = m_persist->isChecked();
+
     PlotPtr plot;
-    for (const auto& p : m_plots)
-        if (p->layers == members && p->panes == panes) { plot = p; break; }
-    if (!plot) {
-        for (quint64 id : members) detachLayer(id);
-        plot = std::make_shared<Plot>();
-        plot->layers = members;
-        plot->panes  = panes;
-        m_plots.push_back(plot);
+    if (persist && m_current) {
+        // Grow the plot on screen, whatever this gesture sampled (FR-ANL-5). Persist used to
+        // accumulate only within ONE scope, so comparing a pixel of pane 1 against a pixel of
+        // an UNSYNCED pane 2 — the ordinary way to compare two scenes — was impossible: the
+        // second click formed its own plot and the first vanished.
+        plot = m_current;
+        for (quint64 id : members)
+            if (m_by_layer.value(id) != plot) detachLayer(id);
+        plot->layers.unite(members);
+        plot->panes.unite(panes);
         for (quint64 id : members) m_by_layer.insert(id, plot);
+    } else {
+        // Re-use the plot when the scope is identical; otherwise the sampled layers leave
+        // their old plots and form a new one — the most recent gesture owns them.
+        for (const auto& p : m_plots)
+            if (p->layers == members && p->panes == panes) { plot = p; break; }
+        if (!plot) {
+            for (quint64 id : members) detachLayer(id);
+            plot = std::make_shared<Plot>();
+            plot->layers = members;
+            plot->panes  = panes;
+            // One gesture spanning panes can only have come from a sync group — inspectFromPane
+            // targets the clicked pane alone otherwise.
+            plot->syncMerge = panes.size() > 1;
+            m_plots.push_back(plot);
+            for (quint64 id : members) m_by_layer.insert(id, plot);
+        }
+        plot->curves.clear();
     }
+    plot->allLayers = allLayers;
 
-    plot->title = buildTitle(paneLabels, allLayers, static_cast<int>(hits.size()),
-                             hits.front().layerName,
-                             paneLabels.isEmpty() ? QString() : paneLabels.front());
-    if (!m_persist->isChecked()) plot->curves.clear();
-
-    const bool multiPane = panes.size() > 1;
     for (auto& h : hits) {
         Curve c;
         c.layerId   = h.layerId;
         c.paneId    = h.paneId;
         c.paneColor = h.paneColor;
-        c.paneLabel = multiPane ? h.paneLabel : QString();
+        c.paneLabel = h.paneLabel;     // shown only while the plot spans >1 pane
         c.layerName = h.layerName;
         // The coordinate is what tells two persisted clicks apart in the legend, so it is
         // formatted to 8 significant digits — fixed decimals would round two nearby clicks
@@ -313,7 +374,31 @@ void SpectralPlotPanel::addInspectResult(double gx, double gy, const std::string
         plot->curves.push_back(std::move(c));
     }
 
+    // Title from the FINAL contents, not just this gesture's: with Persist on the plot may
+    // already span panes and layers this click never touched.
+    retitle(plot);
+
     m_current = plot;
+    render();
+}
+
+void SpectralPlotPanel::deleteLegendRow(int legendRow) {
+    if (!m_current || legendRow < 0 || legendRow >= m_legend_curve.size()) return;
+    const int idx = m_legend_curve[legendRow];
+    if (idx < 0 || idx >= m_current->curves.size()) return;
+
+    const quint64 layerId = m_current->curves[idx].layerId;
+    PlotPtr plot = m_current;                    // detachLayer/erasePlot may clear m_current
+    plot->curves.remove(idx);
+
+    // A layer with no curve left is no longer part of the scope, so activating it falls back
+    // to a blank chart rather than to someone else's merge.
+    bool stillHere = false;
+    for (const Curve& c : plot->curves) if (c.layerId == layerId) { stillHere = true; break; }
+    if (!stillHere) detachLayer(layerId);        // erases the plot if that was its last layer
+
+    if (plot->curves.isEmpty()) erasePlot(plot); // deleting the last curve == pressing Clear
+    else                        retitle(plot);
     render();
 }
 
@@ -421,6 +506,7 @@ void SpectralPlotPanel::render() {
     m_chart->setTitle(title);
 
     if (!haveCurves) {
+        m_legend_curve.clear();
         if (m_legend) m_legend->setEntries({});
         m_status->setText(tr("Inspect mode: left-click samples the topmost layers, "
                              "right-click samples all layers."));
@@ -451,6 +537,7 @@ void SpectralPlotPanel::render() {
     const QColor fallbackPane = QApplication::palette().highlight().color();
     QHash<quint64, int> seenInPane;
     QVector<FvLegendEntry> legend;
+    m_legend_curve.clear();
     int drawn = 0;                       // curves that actually reached the chart
 
     for (int i = 0; i < m_current->curves.size(); ++i) {
@@ -487,7 +574,9 @@ void SpectralPlotPanel::render() {
             yMax = std::max(yMax, pt.y());
         }
         m_chart->addSeries(series);
-        legend.push_back(FvLegendEntry{QString::number(c.layerId), curveLabel(c), col, dash, true});
+        legend.push_back(FvLegendEntry{QString::number(c.layerId), curveLabel(c), col, dash,
+                                       true, true});
+        m_legend_curve.push_back(i);     // this row draws m_current->curves[i]
         ++drawn;
     }
 
@@ -496,6 +585,7 @@ void SpectralPlotPanel::render() {
     if (m_chart->series().isEmpty()) {
         // Every sampled band was no-data.
         m_status->setText(tr("All sampled bands are no-data."));
+        m_legend_curve.clear();
         if (m_legend) m_legend->setEntries({});
         if (m_chart_view) m_chart_view->captureHome();
         applyChartTheme();

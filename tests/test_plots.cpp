@@ -12,12 +12,15 @@
 #include "core/RasterLayer.hpp"
 #include "io/DatasetFactory.hpp"
 #include "plots/ScanPixProfilePanel.hpp"
+#include "widgets/ChartTools.hpp"
 #include "plots/SpectralPlotPanel.hpp"
 #include "gis/InspectTypes.hpp"
 #include "fixtures/FixtureFactory.hpp"
 
+#include <QCheckBox>
 #include <QCoreApplication>
 #include <QColor>
+#include <QEvent>
 #include <QObject>
 #include <QSet>
 #include <QVector>
@@ -56,7 +59,15 @@ struct PlotHarness {
     // The real panels live in a floating dock and keep running the event loop, so the
     // deleteLater()s a re-render queues are actually processed between gestures. A test that
     // never spins the loop would not see anything those deletions touch.
-    static void settle() { QCoreApplication::processEvents(); }
+    //
+    // sendPostedEvents(DeferredDelete) FIRST and explicitly: processEvents() alone does not
+    // deliver DeferredDelete — Qt holds those until the loop that posted them is re-entered —
+    // so a legend rebuilt three times would still have all three generations of rows parented
+    // to the panel, and anything counting widgets would count them all.
+    static void settle() {
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        QCoreApplication::processEvents();
+    }
 
     std::shared_ptr<RasterLayer> add(const std::string& path, uint64_t paneId) {
         auto ds = DatasetFactory::open(path);
@@ -67,6 +78,11 @@ struct PlotHarness {
         return layer;
     }
 };
+
+// A point INSIDE the gradientFloat fixture, which spans x 0..1 and y 0..1 in EPSG:4326.
+// Sampling outside it yields no curves at all, which would leave these cases asserting
+// against empty plots without ever saying so.
+constexpr double kInX = 0.5, kInY = 0.5;
 
 // One inspect gesture's worth of groups, in the shape MainWindow::inspectFromPane produces.
 QVector<InspectPaneGroup> groupsFor(const std::vector<std::shared_ptr<RasterLayer>>& layers) {
@@ -88,7 +104,82 @@ QVector<InspectPaneGroup> groupsFor(const std::vector<std::shared_ptr<RasterLaye
     return out;
 }
 
+// The panel's legend, whose row count IS the number of curves on the chart. Edit and Delete
+// live in a per-row context menu, which is modal and cannot be driven headlessly, so deletion
+// goes through FvChartLegend::deleteEntry — the same signal the menu emits.
+FvChartLegend* legendOf(QWidget& panel) {
+    PlotHarness::settle();                      // rows are replaced via deleteLater()
+    return panel.findChild<FvChartLegend*>();
+}
+
+int curveCount(QWidget& panel) {
+    auto* l = legendOf(panel);
+    return l ? l->entryCount() : -1;
+}
+
+QCheckBox* persistBox(QWidget& panel) {
+    for (auto* c : panel.findChildren<QCheckBox*>())
+        if (c->text().contains(QStringLiteral("Persist"))) return c;
+    return nullptr;
+}
+
 } // namespace
+
+TEST_CASE("Persist grows the spectral plot across scopes", "[plots][TC-ANL-23]") {
+    FixtureFactory ff;
+    const auto fx = ff.gradientFloat(24, 24);
+
+    PlotHarness h;
+    auto a = h.add(fx.path, 1);
+    auto b = h.add(fx.path, 2);          // a DIFFERENT, unsynced pane
+
+    auto* persist = persistBox(h.spectral);
+    REQUIRE(persist != nullptr);
+
+    // Persist off: the second gesture replaces the first, because it is a different scope.
+    h.spectral.addInspectResult(kInX, kInY, "", groupsFor({a}), false);
+    REQUIRE(curveCount(h.spectral) == 1);
+    h.spectral.addInspectResult(kInX, kInY, "", groupsFor({b}), false);
+    REQUIRE(curveCount(h.spectral) == 1);
+
+    // Persist on: the unsynced pane's curve JOINS the plot rather than displacing it.
+    persist->setChecked(true);
+    h.spectral.addInspectResult(0.25, 0.75, "", groupsFor({a}), false);
+    REQUIRE(curveCount(h.spectral) == 2);
+
+    // ...and both layers now resolve to that one plot, so either activation shows the pair.
+    h.mgr.setActiveLayer(0);
+    CHECK(curveCount(h.spectral) == 2);
+    h.mgr.setActiveLayer(1);
+    CHECK(curveCount(h.spectral) == 2);
+}
+
+TEST_CASE("Deleting a legend entry drops exactly its curve", "[plots][TC-ANL-23]") {
+    FixtureFactory ff;
+    const auto fx = ff.gradientFloat(24, 24);
+
+    PlotHarness h;
+    auto a = h.add(fx.path, 1);
+    auto b = h.add(fx.path, 1);
+
+    h.spectral.addInspectResult(kInX, kInY, "", groupsFor({a, b}), true);
+    REQUIRE(curveCount(h.spectral) == 2);
+
+    legendOf(h.spectral)->deleteEntry(0);
+    REQUIRE(curveCount(h.spectral) == 1);
+    // Deleting the last curve discards the plot, so activating either layer is blank.
+    legendOf(h.spectral)->deleteEntry(0);
+    REQUIRE(curveCount(h.spectral) == 0);
+    h.mgr.setActiveLayer(0);
+    CHECK(curveCount(h.spectral) == 0);
+
+    // The profile's legend deletes on the same terms.
+    h.profile.setScopeResolver([&] { return groupsFor({a, b}); });
+    h.profile.compute();
+    REQUIRE(curveCount(h.profile) == 2);
+    legendOf(h.profile)->deleteEntry(1);
+    CHECK(curveCount(h.profile) == 1);
+}
 
 TEST_CASE("Removing a plotted layer leaves both panels standing", "[plots][TC-ANL-18]") {
     FixtureFactory ff;
@@ -100,9 +191,11 @@ TEST_CASE("Removing a plotted layer leaves both panels standing", "[plots][TC-AN
 
     // A merged plot in each panel, covering BOTH layers, so removing one exercises the
     // detach-but-keep-the-plot path and removing the second the erase-the-plot path.
-    h.spectral.addInspectResult(0.5, -0.5, "", groupsFor({a, b}), /*allLayers=*/true);
+    h.spectral.addInspectResult(kInX, kInY, "", groupsFor({a, b}), /*allLayers=*/true);
     h.profile.setScopeResolver([&] { return groupsFor({a, b}); });
     h.profile.compute();
+    REQUIRE(curveCount(h.spectral) == 2);   // the plots really do hold curves
+    REQUIRE(curveCount(h.profile)  == 2);
 
     // Remove them one at a time, highest index first — the order LayerPanel uses.
     PlotHarness::settle();
@@ -124,7 +217,7 @@ TEST_CASE("Removing every layer at once leaves both panels standing", "[plots][T
 
     // Two panes, so the profile's plot is a cross-pane merge and the spectral plot's scope
     // spans panes as well — the state a removal has the most to unpick.
-    h.spectral.addInspectResult(0.5, -0.5, "", groupsFor({a, b, c}), true);
+    h.spectral.addInspectResult(kInX, kInY, "", groupsFor({a, b, c}), true);
     h.profile.setScopeResolver([&] { return groupsFor({a, b, c}); });
     h.profile.compute();
 

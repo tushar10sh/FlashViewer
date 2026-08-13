@@ -16,8 +16,10 @@
 #include <QtCharts/QLineSeries>
 #include <QtCharts/QValueAxis>
 
+#include <QAction>
 #include <QApplication>
 #include <QComboBox>
+#include <QMenu>
 #include <QEvent>
 #include <QWidget>
 #include <QVBoxLayout>
@@ -112,7 +114,11 @@ void ScanPixProfilePanel::setupUi() {
         if (m_current && !m_current->curves.isEmpty())
             m_status->setText(tr("Masking changed — press Compute to apply it."));
     });
+    // The same gap the chart toolbar puts between its trailing controls, on BOTH sides of the
+    // toggle, so the two rows of this panel are spaced alike (FR-APP-15).
+    ctrlLay->addSpacing(kFvChartTrailingGap);
     ctrlLay->addWidget(m_mask_nodata);
+    ctrlLay->addSpacing(kFvChartTrailingGap);
 
     // Compute button
     auto* computeBtn = new QPushButton(tr("Compute"), central);
@@ -139,7 +145,14 @@ void ScanPixProfilePanel::setupUi() {
     auto* toolbar = new FvChartToolbar(m_chart_view, central);
     toolbar->setSuggestedName(QStringLiteral("scan_pixel_profile"));
     toolbar->setCsvProvider([this] { return profileAsCsv(); });
-    connect(toolbar, &FvChartToolbar::editLabelsRequested, this, &ScanPixProfilePanel::editLabels);
+    // Labels are edited by right-clicking them (FR-ANL-10) — the same gesture the Spectral
+    // Plot uses, so the two panels are learned once.
+    connect(m_chart_view, &FvChartView::labelContextMenuRequested, this,
+            [this](FvChartLabel which, const QPoint& globalPos) {
+                QMenu menu(this);
+                QAction* edit = menu.addAction(tr("Edit Label…"));
+                if (menu.exec(globalPos) == edit) editLabel(which);
+            });
 
     // The colour scheme is shared with the Spectral Plot through Settings, but it is offered
     // here too: since Phase 26.5 a profile plot can hold many curves, so which scheme is in
@@ -198,6 +211,8 @@ void ScanPixProfilePanel::setupUi() {
                 else                m_name_override.insert(key, text);
                 render();
             });
+    connect(m_legend, &FvChartLegend::entryDeleted,
+            this, &ScanPixProfilePanel::deleteLegendRow);
     plotLay->addWidget(m_legend, 0);
     mainLay->addWidget(plotArea, 1);
     toolbar->setExportWidget(plotArea);
@@ -258,21 +273,33 @@ static QString buildProfileTitle(const QStringList& paneLabels, int curveCount,
         .arg(paneLabels.join(QStringLiteral(", ")));
 }
 
-void ScanPixProfilePanel::editLabels() {
+void ScanPixProfilePanel::editLabel(FvChartLabel which) {
     const bool scanMode = m_current && !m_current->curves.isEmpty()
                               ? m_current->curves.front().scanMode
                               : m_scan_radio->isChecked();
-    const FvChartLabels defaults{
-        m_current && !m_current->title.isEmpty() ? tr("Profile: %1").arg(m_current->title)
-                                                 : tr("Profile"),
-        scanMode ? tr("Row") : tr("Column"),
-        tr("Value") };
-    FvChartLabels labels{ m_current ? m_current->titleOverride : QString(),
-                          m_x_override, m_y_override };
-    if (!fvEditChartLabels(this, labels, defaults)) return;
-    if (m_current) m_current->titleOverride = labels.title;
-    m_x_override = labels.xTitle;
-    m_y_override = labels.yTitle;
+    switch (which) {
+        case FvChartLabel::Title: {
+            // Nothing computed yet: the heading names the active layer, and an override would
+            // outlive the plot it was written for.
+            if (!m_current) return;
+            const QString def = m_current->title.isEmpty() ? tr("Profile")
+                                                           : tr("Profile: %1").arg(m_current->title);
+            QString v = m_current->titleOverride;
+            if (fvPromptChartLabel(this, tr("Plot Title"), def, v)) m_current->titleOverride = v;
+            break;
+        }
+        case FvChartLabel::XAxis: {
+            QString v = m_x_override;
+            if (fvPromptChartLabel(this, tr("X Axis Title"), scanMode ? tr("Row") : tr("Column"), v))
+                m_x_override = v;
+            break;
+        }
+        case FvChartLabel::YAxis: {
+            QString v = m_y_override;
+            if (fvPromptChartLabel(this, tr("Y Axis Title"), tr("Value"), v)) m_y_override = v;
+            break;
+        }
+    }
     render();
 }
 
@@ -546,13 +573,7 @@ void ScanPixProfilePanel::compute() {
 
     // Title from the FINAL contents, not just this Compute's: with Persist on the plot may
     // already span panes and layers this gesture never touched.
-    QStringList paneLabels;
-    for (const Curve& c : plot->curves)
-        if (!c.paneLabel.isEmpty() && !paneLabels.contains(c.paneLabel))
-            paneLabels.push_back(c.paneLabel);
-    plot->title = buildProfileTitle(paneLabels, plot->curves.size(),
-                                    plot->curves.front().layerName,
-                                    plot->curves.front().paneLabel);
+    retitle(plot);
 
     m_current = plot;
     render();
@@ -585,6 +606,36 @@ void ScanPixProfilePanel::detachLayer(quint64 layerId) {
                     p->curves.end());
     // A plot with no members left is unreachable — nothing can activate it again.
     if (p->layers.isEmpty()) erasePlot(p);
+}
+
+void ScanPixProfilePanel::retitle(const PlotPtr& p) {
+    if (!p || p->curves.isEmpty()) return;
+    QStringList paneLabels;
+    for (const Curve& c : p->curves)
+        if (!c.paneLabel.isEmpty() && !paneLabels.contains(c.paneLabel))
+            paneLabels.push_back(c.paneLabel);
+    p->title = buildProfileTitle(paneLabels, p->curves.size(), p->curves.front().layerName,
+                                 p->curves.front().paneLabel);
+}
+
+void ScanPixProfilePanel::deleteLegendRow(int legendRow) {
+    if (!m_current || legendRow < 0 || legendRow >= m_legend_curve.size()) return;
+    const int idx = m_legend_curve[legendRow];
+    if (idx < 0 || idx >= m_current->curves.size()) return;
+
+    const quint64 layerId = m_current->curves[idx].layerId;
+    PlotPtr plot = m_current;                    // detachLayer/erasePlot may clear m_current
+    plot->curves.remove(idx);
+
+    // A layer with no curve left is no longer part of the scope, so activating it falls back
+    // to a blank chart rather than to a plot that says nothing about it.
+    bool stillHere = false;
+    for (const Curve& c : plot->curves) if (c.layerId == layerId) { stillHere = true; break; }
+    if (!stillHere) detachLayer(layerId);        // erases the plot if that was its last layer
+
+    if (plot->curves.isEmpty()) erasePlot(plot); // deleting the last curve == pressing Clear
+    else                        retitle(plot);
+    render();
 }
 
 void ScanPixProfilePanel::showLayerPlot(int layerIndex) {
@@ -696,6 +747,7 @@ void ScanPixProfilePanel::render() {
     m_chart->setTitle(title);
 
     if (!haveCurves) {
+        m_legend_curve.clear();
         if (m_legend) m_legend->setEntries({});
         m_status->setText(tr("Press Compute to profile the active layer — or, when its pane is "
                              "synced, every visible layer across the sync group."));
@@ -719,13 +771,15 @@ void ScanPixProfilePanel::render() {
     const QColor fallbackPane = QApplication::palette().highlight().color();
     QHash<quint64, int> seenInPane;
     QVector<FvLegendEntry> legend;
+    m_legend_curve.clear();
     int drawn = 0;
 
     double xMax = 1.0;
     double yMin = std::numeric_limits<double>::max();
     double yMax = std::numeric_limits<double>::lowest();
 
-    for (const Curve& c : m_current->curves) {
+    for (int ci = 0; ci < m_current->curves.size(); ++ci) {
+        const Curve& c = m_current->curves[ci];
         // Gather the drawable points BEFORE claiming a colour slot or a legend row: a curve
         // whose every line is masked away draws nothing, so it must contribute nothing — a
         // legend entry for a line that is not on the chart contradicts it.
@@ -756,7 +810,8 @@ void ScanPixProfilePanel::render() {
             yMax = std::max(yMax, pt.y());
         }
         m_chart->addSeries(series);
-        legend.push_back(FvLegendEntry{curveKey(c), curveLabel(c), col, dash, true});
+        legend.push_back(FvLegendEntry{curveKey(c), curveLabel(c), col, dash, true, true});
+        m_legend_curve.push_back(ci);    // this row draws m_current->curves[ci]
         ++drawn;
     }
 
@@ -765,6 +820,7 @@ void ScanPixProfilePanel::render() {
     if (m_chart->series().isEmpty()) {
         // Every line of every curve is no-data.
         m_status->setText(tr("Every line is no-data."));
+        m_legend_curve.clear();
         if (m_legend) m_legend->setEntries({});
         if (m_chart_view) m_chart_view->captureHome();
         applyChartTheme();

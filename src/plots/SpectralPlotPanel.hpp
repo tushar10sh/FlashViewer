@@ -17,6 +17,7 @@ class QLabel;
 class QEvent;
 class FvChartView;
 class FvChartLegend;
+enum class FvChartLabel;
 class QComboBox;
 
 // Dockable Spectral Plot (Phase 26, FR-ANL-1). Replaces the free-floating Spectral Plot
@@ -81,7 +82,9 @@ private:
                                          // the pane cannot silently re-attribute an old curve
         // The label is kept in PIECES, not pre-baked: a rename overrides only the layer-name
         // part, so the coordinates still tell two persisted clicks on one layer apart.
-        QString             paneLabel;   // empty unless the plot spans >1 pane
+        // paneLabel is ALWAYS recorded, and shown only while the plot spans >1 pane: with
+        // Persist on a plot can gain a second pane long after this curve was sampled.
+        QString             paneLabel;
         QString             layerName;
         QString             coord;       // "(x, y)"
         std::vector<double> values;      // one per band; NaN = no-data (drawn as a gap)
@@ -91,8 +94,13 @@ private:
         QString        title;            // automatic, from the scope
         QString        titleOverride;    // user-edited; empty ⇒ use `title`
         QSet<quint64>  layers;   // scope — every layer that maps to this plot
-        QSet<quint64>  panes;    // panes the scope spans (>1 ⇒ a synced merge)
+        QSet<quint64>  panes;    // panes the scope spans
         QVector<Curve> curves;
+        // True only for a plot ONE gesture produced across a sync group. "Persist curves" can
+        // also grow a plot across panes, and that is a comparison the user assembled — it must
+        // not be discarded the way a sync merge is when the panes stop moving together.
+        bool           syncMerge{false};
+        bool           allLayers{false};   // the click rule the title names
     };
     using PlotPtr = std::shared_ptr<Plot>;
 
@@ -100,9 +108,11 @@ private:
     /// Display text for a curve: the user's override of the layer name if there is one, plus
     /// the pane prefix and the coordinates, which a rename never removes.
     QString curveLabel(const Curve& c) const;
-    /// The automatic (un-overridden) title and axis titles, for the edit dialog's placeholders.
+    /// The automatic (un-overridden) title and axis titles, offered by the edit prompt as what
+    /// clearing the field restores.
     void defaultLabels(QString& title, QString& x, QString& y) const;
-    void editLabels();
+    /// Right-click on the title or an axis title chose "Edit Label…" (FR-ANL-10).
+    void editLabel(FvChartLabel which);
     /// The plot on screen as CSV — one row per band, one column per curve — for the shared
     /// toolbar's Save. Empty when there is nothing plotted.
     QString curvesAsCsv() const;
@@ -110,6 +120,12 @@ private:
     // nothing maps to it any more.
     void detachLayer(quint64 layerId);
     void erasePlot(PlotPtr p);
+    /// Drop the curve the legend's `legendRow`-th entry draws (FR-ANL-13). A layer left with
+    /// no curve leaves the scope, and a plot left with no curves is discarded outright.
+    void deleteLegendRow(int legendRow);
+    /// Rebuild `title` from what the plot NOW holds — Persist can add panes and layers long
+    /// after the gesture that created it.
+    void retitle(const PlotPtr& p);
     void render();
     void applyChartTheme();
 
@@ -126,6 +142,11 @@ private:
     // the text removes the key, which is what restores the automatic label.
     QHash<quint64, QString> m_name_override;
     QString                 m_x_override, m_y_override;
+
+    // Legend row → index into m_current->curves, rebuilt by every render(). A curve whose
+    // every band is no-data draws nothing and gets no legend row, so the two are not the same
+    // sequence and delete cannot use the row number directly.
+    QVector<int>             m_legend_curve;
 
     std::vector<PlotPtr>     m_plots;
     QHash<quint64, PlotPtr>  m_by_layer;

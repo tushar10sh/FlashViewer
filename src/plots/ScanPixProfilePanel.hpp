@@ -18,6 +18,7 @@ class LayerManager;
 class RasterLayer;
 class FvChartView;
 class FvChartLegend;
+enum class FvChartLabel;
 class QComboBox;
 class QEvent;
 class QLabel;
@@ -116,7 +117,8 @@ private:
 
     void setupUi();
     void applyChartTheme();
-    void editLabels();
+    /// Right-click on the title or an axis title chose "Edit Label…" (FR-ANL-10).
+    void editLabel(FvChartLabel which);
 
     /// Compute one layer's profile with the masking rule in force AT THE TIME OF THE CALL.
     /// False when the layer has nothing readable (no dataset, empty ROI).
@@ -136,6 +138,11 @@ private:
     // nothing maps to it any more.
     void detachLayer(quint64 layerId);
     void erasePlot(PlotPtr p);          // by value — clearCurrent() passes m_current
+    /// Drop the curve the legend's `legendRow`-th entry draws (FR-ANL-13). A layer left with
+    /// no curve leaves the scope, and a plot left with no curves is discarded outright.
+    void deleteLegendRow(int legendRow);
+    /// Rebuild `title` from what the plot NOW holds — Persist grows it after the fact.
+    void retitle(const PlotPtr& p);
     void render();
 
     LayerManager*   m_mgr{nullptr};
@@ -168,6 +175,10 @@ private:
     // the text removes the key, which is what restores the automatic label.
     QHash<QString, QString> m_name_override;
     QString                 m_x_override, m_y_override;
+
+    // Legend row → index into m_current->curves, rebuilt by every render(). A fully-masked
+    // curve draws nothing and gets no legend row, so the two are not the same sequence.
+    QVector<int>             m_legend_curve;
 
     std::vector<PlotPtr>     m_plots;
     QHash<quint64, PlotPtr>  m_by_layer;
