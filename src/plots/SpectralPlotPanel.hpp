@@ -135,6 +135,8 @@ private:
     // nothing maps to it any more.
     void detachLayer(quint64 layerId);
     void erasePlot(PlotPtr p);
+    /// The plot Persist is building, or null once it has been cleared or erased.
+    PlotPtr persistBase() const;
     /// Drop the curve the legend's `legendRow`-th entry draws (FR-ANL-13) — the legend's own
     /// numbering, which skips curves that draw nothing and rows the user has hidden.
     void deleteLegendRow(int legendRow);
@@ -178,4 +180,9 @@ private:
     std::vector<PlotPtr>     m_plots;
     QHash<quint64, PlotPtr>  m_by_layer;
     PlotPtr                  m_current;
+    // What "Persist curves" is building: the last plot computed or shown. Normally the plot on
+    // screen, but activating a layer that has never been inspected blanks the view, and Persist
+    // must still grow the comparison rather than start a new one. Weak, and validated against
+    // `m_plots`, so a discarded plot is never grown back into existence.
+    std::weak_ptr<Plot>      m_persist_base;
 };

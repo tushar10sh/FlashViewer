@@ -289,6 +289,16 @@ void SpectralPlotPanel::erasePlot(PlotPtr p) {
     }
     m_plots.erase(std::remove(m_plots.begin(), m_plots.end(), p), m_plots.end());
     if (m_current == p) m_current.reset();
+    // Persist must not grow a plot the user has just discarded.
+    if (m_persist_base.lock() == p) m_persist_base.reset();
+}
+
+// The plot Persist is building. Validated against m_plots, so a plot cleared or erased with its
+// last layer can never be grown back into existence.
+SpectralPlotPanel::PlotPtr SpectralPlotPanel::persistBase() const {
+    PlotPtr last = m_persist_base.lock();
+    if (last && std::find(m_plots.begin(), m_plots.end(), last) != m_plots.end()) return last;
+    return {};
 }
 
 void SpectralPlotPanel::detachLayer(quint64 layerId) {
@@ -384,13 +394,20 @@ void SpectralPlotPanel::addInspectResult(double gx, double gy, const std::string
 
     const bool persist = m_persist->isChecked();
 
+    // What Persist grows: the plot on screen, or the last one this panel sampled or showed.
+    // The fallback matters because the view can go blank between two clicks — activating a
+    // layer that has never been inspected does exactly that — and Persist must then still grow
+    // the comparison being built rather than quietly start a new one.
+    PlotPtr base = m_current;
+    if (persist && !base) base = persistBase();
+
     PlotPtr plot;
-    if (persist && m_current) {
-        // Grow the plot on screen, whatever this gesture sampled (FR-ANL-5). Persist used to
-        // accumulate only within ONE scope, so comparing a pixel of pane 1 against a pixel of
-        // an UNSYNCED pane 2 — the ordinary way to compare two scenes — was impossible: the
-        // second click formed its own plot and the first vanished.
-        plot = m_current;
+    if (persist && base) {
+        // Grow it, whatever this gesture sampled (FR-ANL-5). Persist used to accumulate only
+        // within ONE scope, so comparing a pixel of pane 1 against a pixel of an UNSYNCED
+        // pane 2 — the ordinary way to compare two scenes — was impossible: the second click
+        // formed its own plot and the first vanished.
+        plot = base;
         for (quint64 id : members)
             if (m_by_layer.value(id) != plot) detachLayer(id);
         plot->layers.unite(members);
@@ -436,7 +453,8 @@ void SpectralPlotPanel::addInspectResult(double gx, double gy, const std::string
     // already span panes and layers this click never touched.
     retitle(plot);
 
-    m_current = plot;
+    m_current      = plot;
+    m_persist_base = plot;      // the next Persist grows THIS, whatever the view moves on to
     render();
 }
 
@@ -474,6 +492,10 @@ void SpectralPlotPanel::showLayerPlot(int layerIndex) {
             if (it != m_by_layer.constEnd()) m_current = *it;
         }
     }
+    // Landing on a real plot re-points Persist at what the user is now looking at. Landing on a
+    // blank chart leaves the base alone — this panel still blanks on an activation, since its
+    // curves come from inspect clicks and nothing about choosing the next pixel clears it.
+    if (m_current) m_persist_base = m_current;
     render();
 }
 
@@ -505,6 +527,7 @@ void SpectralPlotPanel::forgetAll() {
     m_plots.clear();
     m_by_layer.clear();
     m_current.reset();
+    m_persist_base.reset();
     m_name_override.clear();         // label edits belong to the plots they annotated
     m_x_override.clear();
     m_y_override.clear();

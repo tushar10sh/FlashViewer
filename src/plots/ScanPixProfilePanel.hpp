@@ -158,6 +158,9 @@ private:
     /// Drop `m_current->curves[idx]`. A layer left with no curve leaves the scope, and a plot
     /// left with no curves is discarded outright.
     void deleteCurve(int idx);
+    /// The plot Persist is building (the last one computed or shown), or null when it has been
+    /// cleared, erased or never existed.
+    PlotPtr persistBase() const;
     /// Rebuild `title` from what the plot NOW holds — Persist grows it after the fact.
     void retitle(const PlotPtr& p);
     void render();
@@ -205,4 +208,10 @@ private:
     std::vector<PlotPtr>     m_plots;
     QHash<quint64, PlotPtr>  m_by_layer;
     PlotPtr                  m_current;
+    // What "Persist curves" is building (FR-ANL-12): the last plot computed or shown. With
+    // Persist on it is normally also what is on screen, since an activation no longer blanks
+    // the chart — but the two still part company when a plot is cleared, erased with its last
+    // layer, or when the toggle is ticked while the view is blank. Weak, and validated against
+    // `m_plots` before use, so a discarded plot is never grown or shown back into existence.
+    std::weak_ptr<Plot>      m_persist_base;
 };

@@ -413,6 +413,105 @@ TEST_CASE("A selected batch profiles unsynced panes together and outlives an uns
     CHECK(curveCount(h.profile) == 3);
 }
 
+// Phase 26.10. What "Persist curves" builds, and what it SHOWS while you build it
+// (FR-ANL-12) — the Scan/Pixel Profile only, where the layers to profile are chosen by
+// activating them. Choosing the next layer must not be what clears the comparison it is being
+// chosen for: with Persist on, a layer with no plot leaves the chart alone, and a layer that
+// has one brings that plot up and continues from there. With Persist off, the plain rule
+// stands: the layer's own plot, or a blank chart.
+//
+// (The Spectral Plot deliberately keeps the on-screen rule: its curves come from inspect
+// clicks, not from activating layers, so nothing there blanks the chart mid-comparison.)
+TEST_CASE("Persist keeps its plot while you choose what to add", "[plots][TC-ANL-30]") {
+    FixtureFactory ff;
+    const auto fx = ff.gradientFloat(24, 24);
+
+    PlotHarness h;
+    auto a = h.add(fx.path, 1);
+    auto b = h.add(fx.path, 1);
+    auto never = h.add(fx.path, 2);            // never profiled
+    (void)never;
+
+    h.profile.setScopeResolver([&] { return groupsFor({a}); });
+    h.profile.compute();
+    REQUIRE(curveCount(h.profile) == 1);
+
+    // Persist OFF: activating an unprofiled layer blanks the chart, as it always has.
+    h.mgr.setActiveLayer(2);
+    REQUIRE(curveCount(h.profile) == 0);
+
+    // Ticking Persist brings the plot being built back into view, so the target of the next
+    // Compute is visible before it is pressed.
+    persistBox(h.profile)->setChecked(true);
+    CHECK(curveCount(h.profile) == 1);
+
+    // Persist ON: choosing the next layer no longer clears the chart...
+    h.mgr.setActiveLayer(1);
+    CHECK(curveCount(h.profile) == 1);
+    // ...and the Compute adds to it.
+    h.profile.setScopeResolver([&] { return groupsFor({b}); });
+    h.profile.compute();
+    CHECK(curveCount(h.profile) == 2);
+
+    // A layer that HAS a plot still shows its own, in either toggle state — and becomes what
+    // the next Compute grows. Here both layers belong to the one plot, so it stays put.
+    h.mgr.setActiveLayer(0);
+    CHECK(curveCount(h.profile) == 2);
+
+    // Unticking changes nothing on screen; it states what the NEXT Compute does.
+    persistBox(h.profile)->setChecked(false);
+    CHECK(curveCount(h.profile) == 2);
+    // The next activation then follows the plain rule again.
+    h.mgr.setActiveLayer(2);
+    CHECK(curveCount(h.profile) == 0);
+
+    // Clear must not leave Persist pointing at the discarded plot — neither to grow it nor to
+    // show it again.
+    h.mgr.setActiveLayer(0);
+    REQUIRE(curveCount(h.profile) == 2);
+    h.profile.clearCurrent();
+    persistBox(h.profile)->setChecked(true);
+    CHECK(curveCount(h.profile) == 0);
+    h.profile.setScopeResolver([&] { return groupsFor({a}); });
+    h.profile.compute();
+    CHECK(curveCount(h.profile) == 1);
+}
+
+// Phase 26.10. The Spectral Plot's half of the same defect (FR-ANL-5): Persist grew "the plot
+// on screen", so a view blanked between two clicks — activating a layer that has never been
+// inspected does that — left the next click starting a new plot instead of growing the
+// comparison. Its ACTIVATION behaviour is deliberately unchanged: curves come from clicks, so
+// nothing about choosing the next pixel clears the chart.
+TEST_CASE("Persist grows the spectral plot even after the view has blanked", "[plots][TC-ANL-31]") {
+    FixtureFactory ff;
+    const auto fx = ff.gradientFloat(24, 24);
+
+    PlotHarness h;
+    auto a = h.add(fx.path, 1);
+    auto b = h.add(fx.path, 1);
+    auto never = h.add(fx.path, 2);
+    (void)never;
+
+    h.spectral.addInspectResult(kInX, kInY, "", groupsFor({a}), /*allLayers=*/false);
+    REQUIRE(curveCount(h.spectral) == 1);
+
+    persistBox(h.spectral)->setChecked(true);
+    h.mgr.setActiveLayer(2);                       // a layer never inspected — chart blanks
+    REQUIRE(curveCount(h.spectral) == 0);
+
+    h.spectral.addInspectResult(kInX, kInY, "", groupsFor({b}), false);
+    CHECK(curveCount(h.spectral) == 2);            // joined the comparison, did not restart it
+
+    // Both layers reach the grown plot.
+    h.mgr.setActiveLayer(0);
+    CHECK(curveCount(h.spectral) == 2);
+
+    // Clear drops the base with the plot: the next click starts fresh rather than reviving it.
+    h.spectral.clearCurrent();
+    h.spectral.addInspectResult(kInX, kInY, "", groupsFor({a}), false);
+    CHECK(curveCount(h.spectral) == 1);
+}
+
 // Phase 26.9. Closing a plot window discards its plots (FR-ANL-11/12). The rule was written
 // into MainWindow's event filter alone, so it held only for a close that passed through that
 // filter: the Profile in particular could be closed and reopened still showing the profiles

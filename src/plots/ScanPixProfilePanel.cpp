@@ -189,8 +189,19 @@ void ScanPixProfilePanel::setupUi() {
     // screen instead, so several layers — or several statistics of one layer — can be
     // compared (FR-ANL-12).
     m_persist = new FvTickCheckBox(tr("Persist curves"), central);
-    m_persist->setToolTip(tr("Add the next Compute to the plot on screen instead of replacing "
-                             "it, so profiles of several layers can be compared"));
+    m_persist->setToolTip(tr("Keep building one plot: the next Compute is added to it instead of "
+                             "replacing it, and choosing the next layers no longer clears the "
+                             "chart"));
+    // Ticking it says "I am building a comparison", so show the one it will add to. Without
+    // this the user presses Compute against a blank chart and only then learns what it joined.
+    // UNticking changes nothing on screen: it states what the NEXT Compute does, and snapping
+    // the view back to the active layer would discard the comparison from a click about
+    // something else. The next activation follows the plain rule again.
+    connect(m_persist, &QCheckBox::toggled, this, [this](bool on) {
+        if (!on || m_current) return;
+        m_current = persistBase();
+        if (m_current) render();
+    });
     toolbar->addTrailingWidget(m_persist);
 
     auto* clearBtn = new QPushButton(tr("Clear"), central);
@@ -614,11 +625,18 @@ void ScanPixProfilePanel::compute() {
 
     const bool persist = m_persist && m_persist->isChecked();
 
+    // What Persist grows: the plot on screen if there is one, else the last plot this panel
+    // computed or showed. Since Persist now KEEPS the plot on screen across an activation the
+    // two normally coincide, but the fallback still covers the paths that legitimately blank
+    // the view — a layer removed from under it, a Clear, a toggle flipped on while blank.
+    PlotPtr base = m_current;
+    if (persist && !base) base = persistBase();
+
     PlotPtr plot;
-    if (persist && m_current) {
-        // Grow the plot on screen: the newly profiled layers join its scope, so activating any
-        // of them brings the comparison back up.
-        plot = m_current;
+    if (persist && base) {
+        // Grow it: the newly profiled layers join its scope, so activating any of them brings
+        // the comparison back up.
+        plot = base;
         for (quint64 id : members)
             if (m_by_layer.value(id) != plot) detachLayer(id);
         plot->layers.unite(members);
@@ -671,7 +689,8 @@ void ScanPixProfilePanel::compute() {
     // already span panes and layers this gesture never touched.
     retitle(plot);
 
-    m_current = plot;
+    m_current      = plot;
+    m_persist_base = plot;      // the next Persist grows THIS, whatever the view moves on to
     render();
 
     // Say what was profiled and — the part that matters — what was NOT. A selected layer that
@@ -699,6 +718,8 @@ void ScanPixProfilePanel::erasePlot(PlotPtr p) {
     }
     m_plots.erase(std::remove(m_plots.begin(), m_plots.end(), p), m_plots.end());
     if (m_current == p) m_current.reset();
+    // Persist must not grow a plot the user has just discarded.
+    if (m_persist_base.lock() == p) m_persist_base.reset();
 }
 
 void ScanPixProfilePanel::detachLayer(quint64 layerId) {
@@ -749,14 +770,39 @@ void ScanPixProfilePanel::deleteCurve(int idx) {
     render();
 }
 
+// The plot Persist is building, or null. Weak and checked against m_plots, so a plot cleared
+// or erased in the meantime can never be grown — or shown — back into existence.
+ScanPixProfilePanel::PlotPtr ScanPixProfilePanel::persistBase() const {
+    PlotPtr last = m_persist_base.lock();
+    if (last && std::find(m_plots.begin(), m_plots.end(), last) != m_plots.end()) return last;
+    return {};
+}
+
 void ScanPixProfilePanel::showLayerPlot(int layerIndex) {
-    m_current.reset();
+    PlotPtr found;
     if (m_mgr) {
         auto l = m_mgr->layerAt(layerIndex);
         if (l && l->type() == LayerType::Raster) {
             auto it = m_by_layer.constFind(static_cast<RasterLayer*>(l.get())->layerId());
-            if (it != m_by_layer.constEnd()) m_current = *it;
+            if (it != m_by_layer.constEnd()) found = *it;
         }
+    }
+
+    if (found) {
+        // A layer that HAS a plot always shows it, in either toggle state — and with Persist on
+        // it also becomes what the next Compute grows, so the user can put one comparison down,
+        // pick another up, and go on building that one.
+        m_current      = found;
+        m_persist_base = found;
+    } else if (m_persist && m_persist->isChecked()) {
+        // Persist on, and this layer has no plot: KEEP what is on screen (FR-ANL-12). Choosing
+        // the next layer to profile is how the comparison is assembled, so it must not be what
+        // wipes the comparison from the chart. If the view happens to be blank, bring the plot
+        // being built back up, so the target of the next Compute is visible before it is run.
+        if (!m_current) m_current = persistBase();
+    } else {
+        // Persist off: the plain rule — this layer's plot, or nothing.
+        m_current.reset();
     }
     render();
 }
@@ -790,6 +836,7 @@ void ScanPixProfilePanel::forgetAll() {
     m_plots.clear();
     m_by_layer.clear();
     m_current.reset();
+    m_persist_base.reset();
     m_name_override.clear();         // label edits belong to the plots they annotated
     m_x_override.clear();
     m_y_override.clear();

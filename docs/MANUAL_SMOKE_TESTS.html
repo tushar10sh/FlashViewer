@@ -178,7 +178,7 @@
 <main class="wrap">
   <p class="muted small">Companion catalogue to
     <a href="SRS.md">SRS</a> · <a href="SDD.md">SDD</a> · <a href="TEST_SPEC.md">TEST_SPEC</a> ·
-    <a href="FLASHVIEWER_REVAMP_PLAN.md">Revamp Plan</a>. The automated suite (169 <code>ctest</code>
+    <a href="FLASHVIEWER_REVAMP_PLAN.md">Revamp Plan</a>. The automated suite (171 <code>ctest</code>
     cases) guards unit/headless-GL logic; this is the human counterpart — end-to-end GUI scenarios run
     before a release (or per changed phase). Every scenario is traceable to the SRS FRs, SDD sections,
     and incremental fixes; the closing matrix proves every implemented FR is exercised. Marks and notes
@@ -311,7 +311,7 @@
         <tr><td>FR-MTH-9</td><td>ST-P8-3</td><td>✓</td></tr>
         <tr><td>FR-ANL-1, FR-ANL-2, FR-ANL-3</td><td>ST-P8-4, ST-P26-1, ST-P26-2, ST-P26-3</td><td>✓</td></tr>
         <tr><td>FR-ANL-4</td><td>ST-P26-4, ST-P26-5, ST-P26-6, ST-P26-7</td><td>✓</td></tr>
-        <tr><td>FR-ANL-5</td><td>ST-P26-8, ST-P26-28</td><td>✓</td></tr>
+        <tr><td>FR-ANL-5</td><td>ST-P26-8, ST-P26-28, ST-P26-41</td><td>✓</td></tr>
         <tr><td>FR-ANL-6</td><td>ST-P26-10</td><td>✓</td></tr>
         <tr><td>FR-ANL-7</td><td>ST-P26-11</td><td>✓</td></tr>
         <tr><td>FR-ANL-8</td><td>ST-P26-12, ST-P26-13, ST-P26-14, ST-P26-15, ST-P26-18</td><td>✓</td></tr>
@@ -320,7 +320,7 @@
         <tr><td>FR-ANL-11</td><td>ST-P26-19, ST-P26-20, ST-P26-25, ST-P26-26, ST-P26-36</td><td>✓</td></tr>
         <tr><td>FR-ANL-13</td><td>ST-P26-29</td><td>✓</td></tr>
         <tr><td>FR-ANL-14</td><td>ST-P26-32, ST-P26-33</td><td>✓</td></tr>
-        <tr><td>FR-ANL-12</td><td>ST-P26-22, ST-P26-23, ST-P26-24, ST-P26-25, ST-P26-26, ST-P26-27, ST-P26-36, ST-P26-38, ST-P26-39</td><td>✓</td></tr>
+        <tr><td>FR-ANL-12</td><td>ST-P26-22, ST-P26-23, ST-P26-24, ST-P26-25, ST-P26-26, ST-P26-27, ST-P26-36, ST-P26-38, ST-P26-39, ST-P26-40</td><td>✓</td></tr>
         <tr><td>FR-OSM-1, FR-OSM-7</td><td>ST-P5-1</td><td>✓</td></tr>
         <tr><td>FR-OSM-2, FR-OSM-3, FR-OSM-4, FR-OSM-5, FR-OSM-6</td><td>ST-P5-3</td><td>✓</td></tr>
         <tr><td>FR-OSM-8</td><td>ST-P5-2, ST-P11-6</td><td>✓</td></tr>
@@ -603,6 +603,8 @@ const PHASES = [
   {st:"ST-P26-37", reg:true, steps:"Put a raster in each of two panes, set one pane's Project CRS to EPSG:4326 and the other to a UTM zone covering the data, and SYNC them. Turn on inspect mode and click a recognisable feature (a coastline corner, a field edge) in the 4326 pane. Read where the red square lands in the UTM pane, and compare the two panes' inspected values. Click from the UTM pane too. Then just move the cursor over one pane and watch the ghost marker in the other. Finally pan so the cursor sits outside the other pane's CRS domain", expected:"Both panes mark the SAME GROUND FEATURE, not the same coordinate numbers — the marker crosses the CRS instead of being copied through it. The ghost cursors track together across the boundary. Where the point does not exist in the other pane's CRS, that pane shows NO marker rather than one parked at an arbitrary place. The inspected values are unchanged by any of this (they were always read in each layer's own source CRS)", covers:"FR-PNE-10 · FR-PNE-9 · FR-CRS-4 · FR-CRS-2", tc:"TC-CRS-14"},
   {st:"ST-P26-38", reg:true, steps:"Put rasters in two panes that are NOT synced. In the Layers panel Ctrl-click two or three of them across both panes, then press Compute in the Scan/Pixel Profile. Read the title and the legend. Tick Persist curves, select a different pair, Compute again. Now sync the two panes and unsync them. Finally click a PANE HEADER row and press Compute", expected:"One press profiles the whole selection as ONE plot, with no syncing anywhere: each curve is prefixed with its pane and drawn in that pane's colour. The title reads 'N profiles - «Pane 1», «Pane 2»' and NEVER says Synced. Persist adds the second batch beside the first instead of replacing it. Unsyncing does not discard the plot - you assembled it, the sync group did not. Selecting a pane header profiles that pane's visible rasters", covers:"FR-ANL-12 · FR-LYR-10 · FR-ANL-8", tc:"TC-ANL-29"},
   {st:"ST-P26-39", reg:true, steps:"Select three rasters, one of which has Vis unticked, and press Compute. Read the status line under the toolbar. Then select several LARGE rasters and press Compute, and press Cancel in the progress dialog partway through", expected:"The hidden layer is not profiled and the status line says how many selected layers were skipped as hidden - it never just goes missing. The batch shows a progress dialog naming each layer as it goes, and Cancel STOPS it while KEEPING the curves already computed, saying so in the status line. A single-layer Compute shows no dialog at all", covers:"FR-ANL-12 · FR-OPS-4", tc:"TC-ANL-29"},
+  {st:"ST-P26-40", reg:true, steps:"In the Scan/Pixel Profile, Compute a profile for one layer. With Persist OFF, select a layer that has never been profiled - the chart blanks. Now tick Persist curves. Select that never-profiled layer again and press Compute. Then select a layer that already has its own plot. Untick Persist. Select the never-profiled layer once more. Finally press Clear, tick Persist, and Compute", expected:"Ticking Persist brings the plot you were building back onto the chart. With Persist ON, selecting a layer with no plot leaves the chart exactly as it is - choosing what to profile next is not supposed to clear what you are assembling - and Compute ADDS its curves. Selecting a layer that HAS a plot shows that plot instead, and further Computes then build on THAT one. Unticking Persist changes nothing on screen; the next selection blanks the chart again as before. After Clear the chart is empty and the next Compute starts fresh. The Spectral Plot is unaffected by all of this", covers:"FR-ANL-12 · FR-ANL-5", tc:"TC-ANL-30"},
+  {st:"ST-P26-41", reg:true, steps:"In the Spectral Plot, inspect a pixel. Tick Persist curves. Now activate a layer that has never been inspected - the chart blanks - and inspect another pixel. Then press Clear and inspect once more", expected:"The second click ADDS its curve to the earlier plot instead of starting a new one, even though the chart was blank when you clicked, and both layers then bring that plot up. The blanking on activation is correct here and unchanged - this panel is driven by clicks, not by which layer is active. After Clear, the next click starts a new plot", covers:"FR-ANL-5", tc:"TC-ANL-31"},
   {st:"ST-P26-9", steps:"With a plot on screen, toggle the theme (View → Theme) with the plot window open. Then remove a layer that is part of the plot", expected:"The chart re-tints immediately — background, title, legend and axis labels all readable in both themes, no white box in dark mode. Removing a layer drops its curve; removing the last member leaves a blank chart rather than a stale one", covers:"FR-ANL-1 · FR-ANL-4", tc:"TC-ANL-05"}
  ]},
  {id:"X", title:"Cross-cutting integration scenario", frs:"integration of phase seams", rows:[
