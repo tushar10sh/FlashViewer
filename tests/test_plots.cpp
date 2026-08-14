@@ -183,7 +183,7 @@ TEST_CASE("Deleting a legend entry drops exactly its curve", "[plots][TC-ANL-23]
     CHECK(curveCount(h.profile) == 1);
 }
 
-TEST_CASE("Removing a plotted layer leaves both panels standing", "[plots][TC-ANL-18]") {
+TEST_CASE("Removing a plotted layer leaves both panels standing", "[plots][TC-ANL-22]") {
     FixtureFactory ff;
     const auto fx = ff.gradientFloat(24, 24);
 
@@ -208,7 +208,7 @@ TEST_CASE("Removing a plotted layer leaves both panels standing", "[plots][TC-AN
     REQUIRE(h.mgr.count() == 0);
 }
 
-TEST_CASE("Removing every layer at once leaves both panels standing", "[plots][TC-ANL-18]") {
+TEST_CASE("Removing every layer at once leaves both panels standing", "[plots][TC-ANL-22]") {
     FixtureFactory ff;
     const auto fx = ff.gradientFloat(24, 24);
 
