@@ -79,6 +79,9 @@ public slots:
 protected:
     // Re-tint the chart on a theme switch — QChart is painted, not styled by the QSS.
     void changeEvent(QEvent* e) override;
+    // Closing the window discards every plot (FR-ANL-11). Here rather than in MainWindow's
+    // filter so the rule holds however the window is closed, and so a test can drive it.
+    void closeEvent(QCloseEvent* e) override;
 
 private:
     struct Curve {

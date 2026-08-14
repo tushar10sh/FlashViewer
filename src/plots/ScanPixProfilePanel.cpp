@@ -19,6 +19,7 @@
 
 #include <QApplication>
 #include <QComboBox>
+#include <QCloseEvent>
 #include <QEvent>
 #include <QWidget>
 #include <QVBoxLayout>
@@ -922,6 +923,15 @@ void ScanPixProfilePanel::render() {
     // would key ranges to destroyed axes and home would be a no-op after the first refresh.
     if (m_chart_view) m_chart_view->captureHome();
     applyChartTheme();   // the axes are new objects, so they need re-tinting each time
+}
+
+void ScanPixProfilePanel::closeEvent(QCloseEvent* e) {
+    // The profiles go with the window (FR-ANL-11/12) — the same rule the Spectral Plot has had
+    // since Phase 26.4. It was wired only into MainWindow's event filter, so any close that did
+    // not pass through that filter left the plots behind and the window reopened showing
+    // profiles the user had already dismissed.
+    forgetAll();
+    QWidget::closeEvent(e);
 }
 
 void ScanPixProfilePanel::changeEvent(QEvent* e) {

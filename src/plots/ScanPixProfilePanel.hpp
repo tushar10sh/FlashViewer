@@ -86,6 +86,11 @@ protected:
     // The curve colour is derived from a per-theme lightness band, so a theme switch has to
     // restyle the series, not just re-tint the chrome.
     void changeEvent(QEvent* e) override;
+    // Closing the window discards every plot (FR-ANL-11/12), on the same terms as the Spectral
+    // Plot: the profiles are a live working set, not a document. It lives HERE rather than in
+    // MainWindow's filter so that it holds however the window is closed — the ✕, Alt+F4, or a
+    // caller doing close() — and so a headless test can drive it.
+    void closeEvent(QCloseEvent* e) override;
 
 private:
     // One profiled layer. The statistic is recorded WITH the curve, not read from the radios

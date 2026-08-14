@@ -375,3 +375,40 @@ TEST_CASE("The legend may take up to half the container, never more", "[plots][T
     split.restoreState(state);
     CHECK(split.sizes().at(1) == 300);
 }
+
+// Phase 26.9. Closing a plot window discards its plots (FR-ANL-11/12). The rule was written
+// into MainWindow's event filter alone, so it held only for a close that passed through that
+// filter: the Profile in particular could be closed and reopened still showing the profiles
+// the user had dismissed. Owning it in the panel's own closeEvent makes the rule independent
+// of who delivers the close — and lets it be tested at all, which the filter never could be.
+TEST_CASE("Closing a plot window discards its plots", "[plots][TC-ANL-28]") {
+    FixtureFactory ff;
+    const auto fx = ff.gradientFloat(24, 24);
+
+    PlotHarness h;
+    auto a = h.add(fx.path, 1);
+    auto b = h.add(fx.path, 1);
+
+    h.spectral.addInspectResult(kInX, kInY, "", groupsFor({a, b}), /*allLayers=*/true);
+    h.profile.setScopeResolver([&] { return groupsFor({a, b}); });
+    h.profile.compute();
+    REQUIRE(curveCount(h.spectral) == 2);
+    REQUIRE(curveCount(h.profile)  == 2);
+
+    h.spectral.close();
+    h.profile.close();
+    CHECK(curveCount(h.spectral) == 0);
+    CHECK(curveCount(h.profile)  == 0);
+
+    // And nothing returns when a plotted layer is activated again — the plots are gone, not
+    // merely off screen.
+    h.mgr.setActiveLayer(0);
+    CHECK(curveCount(h.spectral) == 0);
+    CHECK(curveCount(h.profile)  == 0);
+
+    // Re-opening the Profile is exactly this call — what `P` runs now that it no longer calls
+    // compute(). It must draw nothing: the old handler recomputed on every open, which rebuilt
+    // the same profile the close had just discarded and made a working forget look broken.
+    h.profile.showLayerPlot(0);
+    CHECK(curveCount(h.profile) == 0);
+}

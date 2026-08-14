@@ -254,6 +254,7 @@ private:
     ScanPixProfilePanel*   m_profile_panel{nullptr};
     /// Show, raise and focus a plot window, restoring its saved geometry the first time.
     void showPlotWindow(QWidget* w, const QString& key);
-    // Their close handling lives in the existing eventFilter(): forget the plots, save the
-    // frame.
+    // Closing one is handled in two places: the panel's own closeEvent() discards its plots
+    // (so the rule holds however the window is closed), and the eventFilter() here saves the
+    // frame and the divider, which only MainWindow knows the Settings key for.
 };

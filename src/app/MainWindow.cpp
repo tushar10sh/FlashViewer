@@ -861,14 +861,19 @@ void MainWindow::setupMenuBar() {
     connect(actSpectral, &QAction::triggered, this,
             [this] { showPlotWindow(m_spectral_panel, QStringLiteral("spectral")); });
 
-    // Same terms as the Spectral Plot above, plus a recompute so the window never opens
-    // showing a profile of whatever was active last time.
+    // Same terms as the Spectral Plot above. Opening the window does NOT compute (Phase 26.9):
+    // a profile is a raster read the user asks for with the Compute button, and running it on
+    // every open both cost that read unbidden and made forget-on-close look broken — the window
+    // was closed, its plots were genuinely discarded, and then the open handler immediately
+    // rebuilt the same profile of the same active layer. It shows what is STORED for the active
+    // layer instead, which after a close is nothing: a blank chart named for that layer.
     auto* actProfile = toolsMenu->addAction(tr("Scan/Pixel &Profile (P)"));
     actProfile->setShortcut(Qt::Key_P);
     actProfile->setShortcutContext(Qt::ApplicationShortcut);
     connect(actProfile, &QAction::triggered, this, [this] {
         showPlotWindow(m_profile_panel, QStringLiteral("profile"));
-        if (m_profile_panel) m_profile_panel->compute();
+        if (m_profile_panel && m_layer_mgr)
+            m_profile_panel->showLayerPlot(m_layer_mgr->activeIndex());
     });
 
     // ---- Help ----
@@ -2141,11 +2146,10 @@ void MainWindow::updateProjectCrsStatus() {
 }
 
 bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
-    // Closing a plot WINDOW discards its plots — they are a live working set, not a document
-    // (FR-ANL-11) — and saves its frame, so it reopens where the user left it rather than
-    // where it was first shown. A window has no tab to hide behind, so a close is
-    // unambiguous; the dock version had to re-check isHidden(), because visibilityChanged
-    // fired on a tab switch too.
+    // Closing a plot WINDOW saves its frame and its divider, so it reopens where the user left
+    // it rather than where it was first shown. Only MainWindow knows the Settings key, hence
+    // the filter; DISCARDING the plots is the panel's own closeEvent (FR-ANL-11), because that
+    // rule must hold however the window is closed — including on paths that never reach here.
     if (event->type() == QEvent::Close
         && (watched == m_spectral_panel || watched == m_profile_panel)) {
         auto* w = static_cast<QWidget*>(watched);
@@ -2157,8 +2161,6 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
                                                            ? m_spectral_panel->saveSplitState()
                                                            : m_profile_panel->saveSplitState());
         }
-        if (watched == m_spectral_panel) m_spectral_panel->forgetAll();
-        else                             m_profile_panel->forgetAll();
         return QMainWindow::eventFilter(watched, event);
     }
     if (watched == m_crs_label && event->type() == QEvent::MouseButtonRelease) {

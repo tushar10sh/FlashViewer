@@ -493,7 +493,7 @@ hand.)
 
 ### 3.1 Run the test suite
 
-The test suite contains 166 Catch2 tests covering geo-transforms, settings,
+The test suite contains 168 Catch2 tests covering geo-transforms, settings,
 colormaps, the tile cache, the Phase 0 test-infrastructure harnesses
 (fixtures / GDAL oracle / mock network / offscreen-GL), the application shell
 (theme, layout persistence, licenses manifest), raster opening/formats
@@ -508,10 +508,10 @@ Fit, the basemap's longitude wrap-copy range and its sub-pixel Mercator row
 tessellation, the New-Pane position picker's slot → (layout mode, region)
 mapping, coordinate-array georeferencing (fill masking, longitude conventions,
 1-D axis fitting and the 2-D swath warp), the plot curve-styling rule (a pane's first curve is its pane colour exactly; the
-lightness ramp stays separable within a family), the two plot panels — layer removal while a
-plot is open, Persist across scopes, deleting one curve, what a legend entry says with and
-without coordinates, the hand-set axis range that keeps min below max and reverses instead, and
-the legend's half-container width ceiling — and the Layers panel — its grouping and
+lightness ramp stays separable within a family), the two plot windows — layer removal while a
+plot is open, Persist across scopes, deleting one curve, closing a window discarding its plots,
+what a legend entry says with and without coordinates, the hand-set axis range that keeps min
+below max and reverses instead, and the legend's half-container width ceiling — and the Layers panel — its grouping and
 multi-delete logic plus the selection-persistence cases, which drive the **real**
 `LayerPanel` widget and include a pixel check of a selected row's pane band under
 hover against the shipped theme. Tests that need an unavailable capability skip

@@ -17,6 +17,7 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QCloseEvent>
 #include <QEvent>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -708,6 +709,13 @@ void SpectralPlotPanel::render() {
     if (m_chart_view) m_chart_view->captureHome();
 
     applyChartTheme();
+}
+
+void SpectralPlotPanel::closeEvent(QCloseEvent* e) {
+    // The spectra go with the window (FR-ANL-11). Owned by the panel so that every close path
+    // drops them, not just the one MainWindow filters.
+    forgetAll();
+    QWidget::closeEvent(e);
 }
 
 void SpectralPlotPanel::changeEvent(QEvent* e) {
