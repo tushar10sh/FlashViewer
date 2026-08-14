@@ -327,10 +327,10 @@
         <tr><td>FR-OSM-4</td><td>ST-P5-3, ST-P21-5</td><td>✓</td></tr>
         <tr><td>FR-OSM-9</td><td>ST-P21-6</td><td>✓</td></tr>
         <tr><td>FR-PNE-1, FR-PNE-4</td><td>ST-P6-3, ST-P17-1, ST-P18-6</td><td>✓</td></tr>
-        <tr><td>FR-PNE-2, FR-PNE-3, FR-PNE-9</td><td>ST-P6-6</td><td>✓</td></tr>
+        <tr><td>FR-PNE-2, FR-PNE-3, FR-PNE-9</td><td>ST-P6-6, ST-P26-37</td><td>✓</td></tr>
         <tr><td>FR-PNE-5, FR-PNE-6, FR-PNE-7</td><td>ST-P6-4</td><td>✓</td></tr>
         <tr><td>FR-PNE-8</td><td>ST-P6-2, ST-P18-6</td><td>✓</td></tr>
-        <tr><td>FR-PNE-10</td><td>ST-P6-7, ST-P26-4, ST-P26-5</td><td>✓</td></tr>
+        <tr><td>FR-PNE-10</td><td>ST-P6-7, ST-P26-4, ST-P26-5, ST-P26-37</td><td>✓</td></tr>
         <tr><td>FR-PNE-11</td><td>ST-P6-R1</td><td>✓</td></tr>
         <tr><td>FR-PNE-13</td><td>ST-P22-1, ST-P22-2, ST-P22-3, ST-P22-4</td><td>✓</td></tr>
         <tr><td>FR-PNE-7</td><td>ST-P6-4, ST-P21-3</td><td>✓</td></tr>
@@ -345,7 +345,7 @@
         <tr><td>FR-APP-14</td><td>ST-P12-1, ST-P12-7</td><td>✓</td></tr>
         <tr><td>FR-CRS-1, FR-CRS-3</td><td>ST-P11-1, ST-P17-1</td><td>✓</td></tr>
         <tr><td>FR-CRS-2</td><td>ST-P11-2, ST-P11-R3</td><td>✓</td></tr>
-        <tr><td>FR-CRS-4</td><td>ST-P11-4, ST-P11-R2, ST-P26-3</td><td>✓</td></tr>
+        <tr><td>FR-CRS-4</td><td>ST-P11-4, ST-P11-R2, ST-P26-3, ST-P26-37</td><td>✓</td></tr>
         <tr><td>FR-CRS-5</td><td>ST-P11-5, ST-P17-2</td><td>✓</td></tr>
         <tr><td>FR-CRS-6</td><td>ST-P11-3</td><td>✓</td></tr>
         <tr><td>FR-CRS-7</td><td>ST-P11-6</td><td>✓</td></tr>
@@ -600,6 +600,7 @@ const PHASES = [
   {st:"ST-P26-33", reg:true, steps:"With both plots open and holding curves, untick Grid in each toolbar, and untick Coords in the Spectral Plot. Export a CSV from the Spectral Plot. Restart the app and open both plots again", expected:"Grid removes the horizontal and vertical grid lines from that plot. Coords drops the (x, y) line from EVERY Spectral legend entry at once — and from the CSV header, since an export carries what is on screen. Both settings survive a restart, and Grid is one setting shared by the two plots. The Profile has no Coords toggle: its second legend line is the mode and statistic, which is what separates a Mean from a Median", covers:"FR-ANL-14 · FR-ANL-9 · FR-APP-6", tc:"TC-ANL-26"},
   {st:"ST-P26-34", reg:true, steps:"Look at the space between the plot and the legend beside it, and at the size of the legend text, in both plots", expected:"The plot runs almost to the legend — the wide empty band that used to sit between them is gone (it was Qt's default 20 px chart margin on every side). The legend text is a small 7.5 pt, so more of a file name fits on a line", covers:"FR-ANL-9", tc:"—"},
   {st:"ST-P26-36", reg:true, steps:"With Persist on, build a Scan/Pixel Profile of two or three curves. Close the window with the ✕ and reopen it with `P`. Then activate, in the Layers panel, a layer that had been profiled. Repeat the whole thing for the Spectral Plot with `S`, and once more closing from the window manager (Alt+F4) instead of the ✕", expected:"Each window reopens BLANK, with no curve at all until you press Compute — `P` shows the window and computes nothing — and activating a previously plotted layer brings back nothing. Label edits are gone with the plots; the colour scheme, Grid and Coords settings survive. The close route makes no difference", covers:"FR-ANL-11 · FR-ANL-12", tc:"TC-ANL-28"},
+  {st:"ST-P26-37", reg:true, steps:"Put a raster in each of two panes, set one pane's Project CRS to EPSG:4326 and the other to a UTM zone covering the data, and SYNC them. Turn on inspect mode and click a recognisable feature (a coastline corner, a field edge) in the 4326 pane. Read where the red square lands in the UTM pane, and compare the two panes' inspected values. Click from the UTM pane too. Then just move the cursor over one pane and watch the ghost marker in the other. Finally pan so the cursor sits outside the other pane's CRS domain", expected:"Both panes mark the SAME GROUND FEATURE, not the same coordinate numbers — the marker crosses the CRS instead of being copied through it. The ghost cursors track together across the boundary. Where the point does not exist in the other pane's CRS, that pane shows NO marker rather than one parked at an arbitrary place. The inspected values are unchanged by any of this (they were always read in each layer's own source CRS)", covers:"FR-PNE-10 · FR-PNE-9 · FR-CRS-4 · FR-CRS-2", tc:"TC-CRS-14"},
   {st:"ST-P26-9", steps:"With a plot on screen, toggle the theme (View → Theme) with the plot window open. Then remove a layer that is part of the plot", expected:"The chart re-tints immediately — background, title, legend and axis labels all readable in both themes, no white box in dark mode. Removing a layer drops its curve; removing the last member leaves a blank chart rather than a stale one", covers:"FR-ANL-1 · FR-ANL-4", tc:"TC-ANL-05"}
  ]},
  {id:"X", title:"Cross-cutting integration scenario", frs:"integration of phase seams", rows:[

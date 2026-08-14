@@ -511,7 +511,8 @@ mapping, coordinate-array georeferencing (fill masking, longitude conventions,
 lightness ramp stays separable within a family), the two plot windows — layer removal while a
 plot is open, Persist across scopes, deleting one curve, closing a window discarding its plots,
 what a legend entry says with and without coordinates, the hand-set axis range that keeps min
-below max and reverses instead, and the legend's half-container width ceiling — and the Layers panel — its grouping and
+below max and reverses instead, and the legend's half-container width ceiling — the point
+mirrored between synced panes of different Project CRS — and the Layers panel — its grouping and
 multi-delete logic plus the selection-persistence cases, which drive the **real**
 `LayerPanel` widget and include a pixel check of a selected row's pane band under
 hover against the shipped theme. Tests that need an unavailable capability skip

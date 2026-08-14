@@ -8,6 +8,7 @@
 #include "io/RasterDataset.hpp"
 #include "gis/CrsUtil.hpp"
 
+#include <cmath>
 #include <string>
 
 // gis/CrsUtil.hpp — CRS label + equality helpers (used by the status bar and picker).
@@ -21,6 +22,48 @@ TEST_CASE("TC-CRS: CRS helpers format and compare robustly", "[crs][phase11]") {
     // Short label prefers the authority code; empty ⇒ geographic sentinel.
     REQUIRE(fvCrsShortName("EPSG:32633").contains("32633"));
     REQUIRE(fvCrsShortName("").contains("geographic"));
+}
+
+// Phase 26.9 (FR-CRS-2/4, FR-PNE-10). A sync group may hold panes whose Project CRS differ —
+// the shared camera is reprojected between them, but a point mirrored from one pane to another
+// (the inspect highlight, the ghost cursor) was passed through UNCHANGED. This pins the rule
+// the mirroring now follows: a click is a GROUND point, so it crosses into the target pane's
+// CRS before that pane is asked to mark it. The untransformed number is not a small error —
+// degrees read as metres land the marker on a different continent, which is why "it looked
+// roughly right" was never a defence.
+TEST_CASE("TC-CRS-14 a point mirrored between panes crosses their Project CRS", "[crs][phase26]") {
+    // A point in the UTM-33N zone, in degrees.
+    double x = 15.0, y = 50.0;
+    double ux = x, uy = y;
+    if (!fvTransformPoint("EPSG:4326", "EPSG:32633", ux, uy))
+        SKIP("PROJ data unavailable");
+
+    // Projected metres, nowhere near the degrees they came from: handing the raw pair to a
+    // pane in UTM is the bug, not a rounding difference.
+    REQUIRE(std::abs(ux) > 1000.0);
+    REQUIRE(std::abs(uy) > 1000.0);
+
+    // Round-trip: the same ground point comes back, so both panes mark ONE place.
+    double bx = ux, by = uy;
+    REQUIRE(fvTransformPoint("EPSG:32633", "EPSG:4326", bx, by));
+    REQUIRE(std::abs(bx - x) < 1e-6);
+    REQUIRE(std::abs(by - y) < 1e-6);
+
+    // Same CRS on both sides is the identity — panes that DO share a CRS pay nothing and are
+    // not nudged by a needless transform.
+    double sx = x, sy = y;
+    REQUIRE(fvTransformPoint("EPSG:4326", "EPSG:4326", sx, sy));
+    REQUIRE(sx == x);
+    REQUIRE(sy == y);
+
+    // Out of the target's domain ⇒ refused, and the caller clears its marker rather than
+    // drawing one at whatever the failed transform left behind.
+    double fx = 1e12, fy = 1e12;
+    const double keptX = fx, keptY = fy;
+    if (!fvTransformPoint("EPSG:4326", "EPSG:32633", fx, fy)) {
+        REQUIRE(fx == keptX);
+        REQUIRE(fy == keptY);
+    }
 }
 
 // RasterDataset::warpedView — the sameAsSource short-circuit (base layer never warps).

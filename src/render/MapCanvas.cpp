@@ -901,6 +901,10 @@ void MapCanvas::setInspectMode(bool on) {
     emit inspectModeChanged(on);
 }
 
+void MapCanvas::clearInspectHighlight() {
+    if (m_highlight_overlay) m_highlight_overlay->clearHighlight();
+}
+
 void MapCanvas::updateHighlightForGeo(double geo_x, double geo_y) {
     if (!m_highlight_overlay) return;
     // Representative raster: the active-in-pane layer if it is a raster, else the first raster

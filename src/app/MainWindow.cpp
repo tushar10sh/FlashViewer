@@ -1616,10 +1616,21 @@ void MainWindow::wireCanvasSignals(MapCanvas* canvas) {
     connect(canvas, &MapCanvas::cursorGeoPos, this, [this, canvas](double x, double y) {
         const uint64_t srcId = canvas->paneId();
         if (!m_pane_layout->paneSynced(srcId)) return;
+        // (x, y) are in the SOURCE pane's Project CRS, which a synced sibling need not share
+        // (Phase 11) — same rule as the inspect highlight below: transform into each pane's
+        // own CRS, and show no ghost at all where the point does not exist there, since a
+        // marker in the wrong place is worse than none.
+        const std::string srcWkt = canvas->projectCrsWkt();
         for (int i = 0; i < m_pane_layout->paneCount(); ++i) {
             const uint64_t id = m_pane_layout->paneId(i);
             if (!m_pane_layout->paneSynced(id)) continue;
-            if (auto* c = m_pane_layout->paneCanvas(i)) c->setGhostCursor(x, y, true);
+            auto* c = m_pane_layout->paneCanvas(i);
+            if (!c) continue;
+            double gx = x, gy = y;
+            if (fvTransformPoint(srcWkt, c->projectCrsWkt(), gx, gy))
+                c->setGhostCursor(gx, gy, true);
+            else
+                c->setGhostCursor(0.0, 0.0, false);
         }
     });
 
@@ -2030,14 +2041,27 @@ void MainWindow::inspectFromPane(MapCanvas* clicked, double gx, double gy, bool 
     if (m_spectral_panel && m_spectral_panel->isVisible())
         m_spectral_panel->addInspectResult(gx, gy, geoWkt, groups, allLayers);
 
-    // Mirror the red inspect-highlight square onto every target pane at the shared geo point
+    // Mirror the red inspect-highlight square onto every target pane at the SAME GROUND POINT
     // (Phase 6.8.3): the clicked pane already self-highlights in MapCanvas::mousePressEvent;
     // this draws it on the synced siblings too (idempotent for the clicked pane). Out-of-bounds
     // points clear that pane's overlay.
+    //
+    // Project CRS is PER PANE (Phase 11), so a sync group can hold panes in different CRS —
+    // the shared camera is already reprojected between them (SyncGroup carries the source
+    // WKT). The click, though, arrives in the CLICKED pane's CRS, and was being handed to the
+    // siblings unchanged: pane 2 then read metres as degrees and marked a point that could be
+    // continents away. Transform per target, and clear rather than guess when the point has no
+    // image in that CRS (FR-CRS-2/4).
     for (uint64_t pid : panes)
         for (int i = 0; i < m_pane_layout->paneCount(); ++i)
             if (m_pane_layout->paneId(i) == pid) {
-                if (auto* c = m_pane_layout->paneCanvas(i)) c->updateHighlightForGeo(gx, gy);
+                if (auto* c = m_pane_layout->paneCanvas(i)) {
+                    double mx = gx, my = gy;
+                    if (fvTransformPoint(geoWkt, c->projectCrsWkt(), mx, my))
+                        c->updateHighlightForGeo(mx, my);
+                    else
+                        c->clearInspectHighlight();
+                }
                 break;
             }
 }

@@ -127,7 +127,14 @@ public:
     // Draw the red inspect-highlight square at a geographic point, snapped to this pane's
     // representative raster (public so MainWindow can mirror it onto synced sibling panes,
     // Phase 6.8.3). Out-of-bounds points clear this pane's highlight.
+    //
+    // (geo_x, geo_y) are read in THIS pane's Project CRS. A caller mirroring a click from
+    // another pane must transform first (fvTransformPoint) — synced panes may hold different
+    // Project CRS since Phase 11 (FR-CRS-2/4).
     void updateHighlightForGeo(double geo_x, double geo_y);
+    /// Drop this pane's inspect highlight — used when a mirrored point has no image in this
+    /// pane's CRS, where drawing anything at all would be drawing it in the wrong place.
+    void clearInspectHighlight();
 
     struct GlInfo { QString renderer, vendor, version; };
     const GlInfo& glInfo() const { return m_gl_info; }
