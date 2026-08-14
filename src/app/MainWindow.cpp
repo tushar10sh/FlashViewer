@@ -1924,9 +1924,52 @@ int MainWindow::topLayerIndexInPane(uint64_t paneId) const {
     return -1;
 }
 
-QVector<InspectPaneGroup> MainWindow::buildProfileScope() const {
+FvProfileScope MainWindow::buildProfileScope() const {
     QVector<InspectPaneGroup> groups;
     if (!m_layer_mgr || !m_pane_layout) return groups;
+
+    // Layers-panel SELECTION first (FR-ANL-12, FR-LYR-10). Two or more selected rasters are a
+    // deliberate statement of what to compare, so they are profiled together whatever the sync
+    // roles say — which is the whole point: comparing layers across panes used to require
+    // syncing those panes, i.e. changing how they navigate in order to ask a question about
+    // their data. selectedLayerIndices() already folds in every layer of a selected PANE
+    // header, so selecting a pane profiles its contents.
+    //
+    // Hidden rasters are skipped and COUNTED, not silently dropped: every scope rule in the app
+    // is written in terms of visible rasters, but the user ticked these deliberately, so the
+    // panel says how many were left out.
+    if (m_layer_panel) {
+        QVector<InspectPaneGroup> sel;
+        int hidden = 0, visible = 0;
+        // Pane order from the layout, layer order from the manager, so the batch reads in the
+        // same order the panels list it.
+        for (int i = 0; i < m_pane_layout->paneCount(); ++i) {
+            const uint64_t pid = m_pane_layout->paneId(i);
+            InspectPaneGroup grp;
+            grp.paneId    = pid;
+            grp.paneLabel = m_pane_layout->paneLabel(i);
+            grp.paneColor = m_pane_layout->paneColorForId(pid);
+            for (int idx : m_layer_panel->selectedLayerIndices()) {
+                auto l = m_layer_mgr->layerAt(idx);
+                if (!l || l->type() != LayerType::Raster || l->paneId() != pid) continue;
+                if (!l->visible()) { ++hidden; continue; }
+                ++visible;
+                grp.layers.push_back(InspectLayerEntry{ l->name(),
+                                                        static_cast<RasterLayer*>(l.get()) });
+            }
+            if (!grp.layers.isEmpty()) sel.push_back(std::move(grp));
+        }
+        // ONE selected layer is not a batch — it is the ordinary case, and it must keep the
+        // sync behaviour below, or selecting a row in a synced pane would quietly narrow the
+        // scope the sync group is meant to give it.
+        if (visible >= 2) {
+            FvProfileScope out;
+            out.groups        = std::move(sel);
+            out.hiddenSkipped = hidden;
+            out.fromSelection = true;
+            return out;
+        }
+    }
 
     auto active = m_layer_mgr->activeLayer();
     if (!active || active->type() != LayerType::Raster) return groups;

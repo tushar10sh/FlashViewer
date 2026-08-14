@@ -376,6 +376,43 @@ TEST_CASE("The legend may take up to half the container, never more", "[plots][T
     CHECK(split.sizes().at(1) == 300);
 }
 
+// Phase 26.9. A profile scope built from the Layers-panel SELECTION rather than from a sync
+// group (FR-ANL-12): several layers, in panes that are not synced, profiled by one Compute.
+//
+// The distinction that matters is what happens afterwards. A sync-produced merge is a statement
+// about panes that move together, so it is discarded when they stop; a selection is a
+// comparison the user assembled, and unsyncing has nothing to say about it. Both are multi-pane
+// plots holding the same curves, so `fromSelection` is what tells them apart.
+TEST_CASE("A selected batch profiles unsynced panes together and outlives an unsync",
+          "[plots][TC-ANL-29]") {
+    FixtureFactory ff;
+    const auto fx = ff.gradientFloat(24, 24);
+
+    PlotHarness h;
+    auto a = h.add(fx.path, 1);       // pane 1
+    auto b = h.add(fx.path, 2);       // pane 2 — never synced with pane 1
+    auto c = h.add(fx.path, 2);
+
+    FvProfileScope sel;
+    sel.groups        = groupsFor({a, b, c});
+    sel.fromSelection = true;
+    h.profile.setScopeResolver([&] { return sel; });
+    h.profile.compute();
+    REQUIRE(curveCount(h.profile) == 3);
+
+    // Every member reaches the one plot, exactly as a merge's members do.
+    h.mgr.setActiveLayer(0);
+    CHECK(curveCount(h.profile) == 3);
+    h.mgr.setActiveLayer(1);
+    CHECK(curveCount(h.profile) == 3);
+
+    // The point of the case: no sync group produced this, so dissolving one cannot take it
+    // away. The same call discards a genuine sync merge (TC-ANL-18).
+    h.profile.dropMergedPlotsOutside(QSet<quint64>{});
+    h.mgr.setActiveLayer(2);
+    CHECK(curveCount(h.profile) == 3);
+}
+
 // Phase 26.9. Closing a plot window discards its plots (FR-ANL-11/12). The rule was written
 // into MainWindow's event filter alone, so it held only for a close that passed through that
 // filter: the Profile in particular could be closed and reopened still showing the profiles

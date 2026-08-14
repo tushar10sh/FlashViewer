@@ -93,6 +93,12 @@ public:
     void setPaneSyncResolver(std::function<FvPaneSyncInfo(quint64)> fn);
     // Rebuild the grouped list — call after panes are added/removed/renamed (Phase 18 #6).
     void refreshPanes();
+    // The HIGHLIGHTED rows, in LayerManager index order, with every layer of a selected PANE
+    // header folded in — panes and layers of different panes mix freely in one Shift/Ctrl
+    // selection (FR-LYR-10). It is the removal set, and since Phase 26.9 also what one
+    // Scan/Pixel Profile Compute covers when 2+ rasters are selected (FR-ANL-12), which is why
+    // MainWindow can read it.
+    std::vector<int> selectedLayerIndices() const;
 
 signals:
     void activeLayerChanged(int index);
@@ -141,7 +147,6 @@ private:
     // The HIGHLIGHTED rows are the removal set — there are no separate "select for delete"
     // checkboxes. A selected pane group contributes every layer it holds, and panes and
     // layers of other panes mix freely in one Shift/Ctrl selection.
-    std::vector<int>     selectedLayerIndices() const;   // incl. layers of selected panes
     std::vector<quint64> selectedPaneIds() const;        // highlighted group headers
 
     QColor paneColorFor(int layerIndex) const;

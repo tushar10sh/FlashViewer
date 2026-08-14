@@ -1,7 +1,7 @@
 <!doctype html>
 <!-- FlashViewer Manual Smoke Tests — sole source of truth (the former MANUAL_SMOKE_TESTS.md was removed).
      Update on any incremental change, together with SRS/SDD/TEST_SPEC/REVAMP_PLAN.
-     Tracks SRS v2.91 / SDD v1.90 (Phase 14 conformance sync; Phase 13 deferred to 0.2.0; 0.2.0 Phases 15–26.9). Self-contained: no external requests; state in localStorage. -->
+     Tracks SRS v2.91 / SDD v1.90 (Phase 14 conformance sync; Phase 13 deferred to 0.2.0; 0.2.0 Phases 15–26.10). Self-contained: no external requests; state in localStorage. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -178,7 +178,7 @@
 <main class="wrap">
   <p class="muted small">Companion catalogue to
     <a href="SRS.md">SRS</a> · <a href="SDD.md">SDD</a> · <a href="TEST_SPEC.md">TEST_SPEC</a> ·
-    <a href="FLASHVIEWER_REVAMP_PLAN.md">Revamp Plan</a>. The automated suite (168 <code>ctest</code>
+    <a href="FLASHVIEWER_REVAMP_PLAN.md">Revamp Plan</a>. The automated suite (169 <code>ctest</code>
     cases) guards unit/headless-GL logic; this is the human counterpart — end-to-end GUI scenarios run
     before a release (or per changed phase). Every scenario is traceable to the SRS FRs, SDD sections,
     and incremental fixes; the closing matrix proves every implemented FR is exercised. Marks and notes
@@ -320,7 +320,7 @@
         <tr><td>FR-ANL-11</td><td>ST-P26-19, ST-P26-20, ST-P26-25, ST-P26-26, ST-P26-36</td><td>✓</td></tr>
         <tr><td>FR-ANL-13</td><td>ST-P26-29</td><td>✓</td></tr>
         <tr><td>FR-ANL-14</td><td>ST-P26-32, ST-P26-33</td><td>✓</td></tr>
-        <tr><td>FR-ANL-12</td><td>ST-P26-22, ST-P26-23, ST-P26-24, ST-P26-25, ST-P26-26, ST-P26-27, ST-P26-36</td><td>✓</td></tr>
+        <tr><td>FR-ANL-12</td><td>ST-P26-22, ST-P26-23, ST-P26-24, ST-P26-25, ST-P26-26, ST-P26-27, ST-P26-36, ST-P26-38, ST-P26-39</td><td>✓</td></tr>
         <tr><td>FR-OSM-1, FR-OSM-7</td><td>ST-P5-1</td><td>✓</td></tr>
         <tr><td>FR-OSM-2, FR-OSM-3, FR-OSM-4, FR-OSM-5, FR-OSM-6</td><td>ST-P5-3</td><td>✓</td></tr>
         <tr><td>FR-OSM-8</td><td>ST-P5-2, ST-P11-6</td><td>✓</td></tr>
@@ -377,7 +377,7 @@
 
   <footer>
     <p><b>FlashViewer Manual Smoke Tests</b> — sole source of truth (replaces the former
-      <code>MANUAL_SMOKE_TESTS.md</code>). v1.14 · tracks SRS v2.92 / SDD v1.91 (0.1.0 base release) + 0.2.0 work (Phases 15–26.9).
+      <code>MANUAL_SMOKE_TESTS.md</code>). v1.15 · tracks SRS v2.93 / SDD v1.92 (0.1.0 base release) + 0.2.0 work (Phases 15–26.10).
       Update on any incremental change, alongside SRS/SDD/TEST_SPEC/REVAMP_PLAN. Self-contained &amp; offline;
       results stored in your browser.</p>
   </footer>
@@ -601,6 +601,8 @@ const PHASES = [
   {st:"ST-P26-34", reg:true, steps:"Look at the space between the plot and the legend beside it, and at the size of the legend text, in both plots", expected:"The plot runs almost to the legend — the wide empty band that used to sit between them is gone (it was Qt's default 20 px chart margin on every side). The legend text is a small 7.5 pt, so more of a file name fits on a line", covers:"FR-ANL-9", tc:"—"},
   {st:"ST-P26-36", reg:true, steps:"With Persist on, build a Scan/Pixel Profile of two or three curves. Close the window with the ✕ and reopen it with `P`. Then activate, in the Layers panel, a layer that had been profiled. Repeat the whole thing for the Spectral Plot with `S`, and once more closing from the window manager (Alt+F4) instead of the ✕", expected:"Each window reopens BLANK, with no curve at all until you press Compute — `P` shows the window and computes nothing — and activating a previously plotted layer brings back nothing. Label edits are gone with the plots; the colour scheme, Grid and Coords settings survive. The close route makes no difference", covers:"FR-ANL-11 · FR-ANL-12", tc:"TC-ANL-28"},
   {st:"ST-P26-37", reg:true, steps:"Put a raster in each of two panes, set one pane's Project CRS to EPSG:4326 and the other to a UTM zone covering the data, and SYNC them. Turn on inspect mode and click a recognisable feature (a coastline corner, a field edge) in the 4326 pane. Read where the red square lands in the UTM pane, and compare the two panes' inspected values. Click from the UTM pane too. Then just move the cursor over one pane and watch the ghost marker in the other. Finally pan so the cursor sits outside the other pane's CRS domain", expected:"Both panes mark the SAME GROUND FEATURE, not the same coordinate numbers — the marker crosses the CRS instead of being copied through it. The ghost cursors track together across the boundary. Where the point does not exist in the other pane's CRS, that pane shows NO marker rather than one parked at an arbitrary place. The inspected values are unchanged by any of this (they were always read in each layer's own source CRS)", covers:"FR-PNE-10 · FR-PNE-9 · FR-CRS-4 · FR-CRS-2", tc:"TC-CRS-14"},
+  {st:"ST-P26-38", reg:true, steps:"Put rasters in two panes that are NOT synced. In the Layers panel Ctrl-click two or three of them across both panes, then press Compute in the Scan/Pixel Profile. Read the title and the legend. Tick Persist curves, select a different pair, Compute again. Now sync the two panes and unsync them. Finally click a PANE HEADER row and press Compute", expected:"One press profiles the whole selection as ONE plot, with no syncing anywhere: each curve is prefixed with its pane and drawn in that pane's colour. The title reads 'N profiles - «Pane 1», «Pane 2»' and NEVER says Synced. Persist adds the second batch beside the first instead of replacing it. Unsyncing does not discard the plot - you assembled it, the sync group did not. Selecting a pane header profiles that pane's visible rasters", covers:"FR-ANL-12 · FR-LYR-10 · FR-ANL-8", tc:"TC-ANL-29"},
+  {st:"ST-P26-39", reg:true, steps:"Select three rasters, one of which has Vis unticked, and press Compute. Read the status line under the toolbar. Then select several LARGE rasters and press Compute, and press Cancel in the progress dialog partway through", expected:"The hidden layer is not profiled and the status line says how many selected layers were skipped as hidden - it never just goes missing. The batch shows a progress dialog naming each layer as it goes, and Cancel STOPS it while KEEPING the curves already computed, saying so in the status line. A single-layer Compute shows no dialog at all", covers:"FR-ANL-12 · FR-OPS-4", tc:"TC-ANL-29"},
   {st:"ST-P26-9", steps:"With a plot on screen, toggle the theme (View → Theme) with the plot window open. Then remove a layer that is part of the plot", expected:"The chart re-tints immediately — background, title, legend and axis labels all readable in both themes, no white box in dark mode. Removing a layer drops its curve; removing the last member leaves a blank chart rather than a stale one", covers:"FR-ANL-1 · FR-ANL-4", tc:"TC-ANL-05"}
  ]},
  {id:"X", title:"Cross-cutting integration scenario", frs:"integration of phase seams", rows:[
@@ -730,7 +732,7 @@ function applyFilter(){
 function readMeta(){ state.meta.build=document.getElementById("m-build").value; state.meta.tester=document.getElementById("m-tester").value; state.meta.date=document.getElementById("m-date").value; save(); }
 function doExport(){
   readMeta();
-  const payload = { doc:"FlashViewer Manual Smoke Tests", docVersion:"1.14", tracks:"SRS v2.92 / SDD v1.91", generatedAt:new Date().toISOString(), meta:state.meta, results:state.results };
+  const payload = { doc:"FlashViewer Manual Smoke Tests", docVersion:"1.15", tracks:"SRS v2.93 / SDD v1.92", generatedAt:new Date().toISOString(), meta:state.meta, results:state.results };
   const blob = new Blob([JSON.stringify(payload,null,2)], {type:"application/json"});
   const a = document.createElement("a"); a.href=URL.createObjectURL(blob);
   a.download = "fv-smoke-report-"+(state.meta.date||new Date().toISOString().slice(0,10))+".json";

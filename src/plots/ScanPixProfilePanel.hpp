@@ -54,10 +54,11 @@ public:
     void setPaneColorResolver(std::function<QColor(quint64)> r) { m_pane_color = std::move(r); }
 
     // What one Compute profiles, in the same InspectPaneGroup shape the Pixel Inspector and
-    // the Spectral Plot are fed — MainWindow owns the PaneLayout, so it decides whether the
-    // active layer's pane is synced and which layers that pulls in. Returning an empty vector
-    // (or leaving the resolver unset) falls back to the active layer alone.
-    void setScopeResolver(std::function<QVector<InspectPaneGroup>()> r) { m_scope = std::move(r); }
+    // the Spectral Plot are fed — MainWindow owns the PaneLayout and the Layers-panel
+    // selection, so it decides whether the scope is the active layer, the whole sync group, or
+    // the layers the user selected. Returning an empty scope (or leaving the resolver unset)
+    // falls back to the active layer alone.
+    void setScopeResolver(std::function<FvProfileScope()> r) { m_scope = std::move(r); }
 
     // The Layers panel activated `layerIndex` — show that layer's plot, or a blank chart.
     void showLayerPlot(int layerIndex);
@@ -166,7 +167,7 @@ private:
     bool   m_has_roi{false};
 
     std::function<QColor(quint64)>                 m_pane_color;
-    std::function<QVector<InspectPaneGroup>()>     m_scope;
+    std::function<FvProfileScope()>                m_scope;
 
     QRadioButton*   m_scan_radio{nullptr};
     QRadioButton*   m_pixel_radio{nullptr};

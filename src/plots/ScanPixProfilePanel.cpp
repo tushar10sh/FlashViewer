@@ -19,6 +19,7 @@
 
 #include <QApplication>
 #include <QComboBox>
+#include <QProgressDialog>
 #include <QCloseEvent>
 #include <QEvent>
 #include <QWidget>
@@ -32,6 +33,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <memory>
 #include <limits>
 #include <vector>
 
@@ -265,9 +267,14 @@ QString ScanPixProfilePanel::curveLabel(const Curve& c) const {
 }
 
 // Name the plot after the scope that produced it, so the title always says WHOSE profiles are
-// drawn: one layer by name, one pane's merge by pane, a sync-group merge by the panes it spans.
+// drawn: one layer by name, one pane's merge by pane, a multi-pane plot by the panes it spans.
+//
+// `synced` is what separates the two multi-pane cases, and the word "Synced" is reserved for
+// the sync group: a plot assembled from a Layers-panel selection behaves differently on unsync
+// (it survives), so a title that called it synced would be a promise the plot does not keep.
 static QString buildProfileTitle(const QStringList& paneLabels, int curveCount,
-                                 const QString& soleLayerName, const QString& solePaneLabel) {
+                                 const QString& soleLayerName, const QString& solePaneLabel,
+                                 bool synced) {
     if (curveCount == 1)
         return solePaneLabel.isEmpty()
                    ? soleLayerName
@@ -278,8 +285,10 @@ static QString buildProfileTitle(const QStringList& paneLabels, int curveCount,
                    ? ScanPixProfilePanel::tr("%n profile(s)", "", curveCount)
                    : ScanPixProfilePanel::tr("%1 — %n profile(s)", "", curveCount).arg(pane);
     }
-    return ScanPixProfilePanel::tr("Synced %1 — %n profile(s)", "", curveCount)
-        .arg(paneLabels.join(QStringLiteral(", ")));
+    const QString panes = paneLabels.join(QStringLiteral(", "));
+    return synced
+               ? ScanPixProfilePanel::tr("Synced %1 — %n profile(s)", "", curveCount).arg(panes)
+               : ScanPixProfilePanel::tr("%n profile(s) — %1", "", curveCount).arg(panes);
 }
 
 void ScanPixProfilePanel::editLabels() {
@@ -505,10 +514,11 @@ bool ScanPixProfilePanel::profileFor(RasterLayer* rl, const Curve& spec,
 void ScanPixProfilePanel::compute() {
     if (!m_mgr) return;
 
-    // The scope: MainWindow decides, because only it knows whether the active layer's pane is
-    // synced. Without a resolver (or when it declines) the active layer alone is profiled,
+    // The scope: MainWindow decides, because only it knows the sync roles and the Layers-panel
+    // selection. Without a resolver (or when it declines) the active layer alone is profiled,
     // which is what this panel always did.
-    QVector<InspectPaneGroup> scope = m_scope ? m_scope() : QVector<InspectPaneGroup>{};
+    const FvProfileScope req = m_scope ? m_scope() : FvProfileScope{};
+    QVector<InspectPaneGroup> scope = req.groups;
     if (scope.isEmpty()) {
         auto l = m_mgr->activeLayer();
         if (!l || l->type() != LayerType::Raster) {
@@ -545,10 +555,42 @@ void ScanPixProfilePanel::compute() {
     std::vector<Hit> hits;
     QSet<quint64>    panes;
 
+    int total = 0;
+    for (const auto& g : scope)
+        for (const auto& e : g.layers) if (e.layer) ++total;
+
+    // One layer is a keystroke; a selection of eight is eight full-raster statistics on this
+    // thread, and the window would sit dead for the duration with no way out. Anything past a
+    // single layer therefore runs behind a modal progress dialog with a working Cancel — the
+    // same idiom the GDAL ops use (FR-OPS-4). Cancel KEEPS what has already been profiled: a
+    // partial batch is a perfectly good plot, and throwing away minutes of reads because the
+    // user did not want to wait for the last layer would be its own bug.
+    std::unique_ptr<QProgressDialog> prog;
+    if (total > 1) {
+        prog = std::make_unique<QProgressDialog>(tr("Profiling selected layers…"), tr("Cancel"),
+                                                 0, total, this);
+        prog->setWindowTitle(tr("Scan/Pixel Profile"));
+        prog->setWindowModality(Qt::WindowModal);
+        prog->setMinimumDuration(0);
+        prog->setAutoClose(false);
+        prog->setAutoReset(false);
+    }
+
+    bool cancelled = false;
+    int  done      = 0;
     for (const auto& g : scope) {
         bool any = false;
         for (const auto& e : g.layers) {
             if (!e.layer) continue;
+            if (prog) {
+                if (prog->wasCanceled()) { cancelled = true; break; }
+                prog->setLabelText(tr("Profiling %1 (%2 of %3)…")
+                                       .arg(e.name).arg(done + 1).arg(total));
+                prog->setValue(done);
+                QApplication::processEvents();
+                if (prog->wasCanceled()) { cancelled = true; break; }
+            }
+            ++done;
             std::vector<double> vals;
             if (!profileFor(e.layer, spec, vals)) continue;
             hits.push_back(Hit{g.paneId, g.paneLabel, g.paneColor, e.name,
@@ -556,11 +598,14 @@ void ScanPixProfilePanel::compute() {
             any = true;
         }
         if (any) panes.insert(g.paneId);
+        if (cancelled) break;
     }
+    if (prog) prog->close();
 
     if (hits.empty()) {
         // Nothing to profile — say so without destroying what the user is already looking at.
-        m_status->setText(tr("Nothing to profile in the current selection."));
+        m_status->setText(cancelled ? tr("Cancelled — nothing was profiled.")
+                                    : tr("Nothing to profile in the current selection."));
         return;
     }
 
@@ -579,6 +624,9 @@ void ScanPixProfilePanel::compute() {
         plot->layers.unite(members);
         plot->panes.unite(panes);
         for (quint64 id : members) m_by_layer.insert(id, plot);
+        // Growing a sync merge with a hand-picked selection makes it the user's comparison,
+        // not the sync group's — so it stops being something an unsync may throw away.
+        if (req.fromSelection) plot->syncMerge = false;
     } else {
         // Re-use the plot when the scope is identical; otherwise the profiled layers leave
         // their old plots and form a new one — the most recent Compute owns them.
@@ -589,9 +637,12 @@ void ScanPixProfilePanel::compute() {
             plot = std::make_shared<Plot>();
             plot->layers    = members;
             plot->panes     = panes;
-            // A scope spanning panes can only have come from the sync group — the resolver
-            // returns one pane otherwise — so this is the merge that a later unsync invalidates.
-            plot->syncMerge = panes.size() > 1;
+            // Only a SYNC-produced merge is invalidated by a later unsync. A multi-pane scope
+            // can now also come from the Layers-panel selection (FR-ANL-12), and that is a
+            // comparison the user assembled by hand — it says nothing about panes moving
+            // together, so unsyncing must leave it alone. The two are indistinguishable once
+            // the curves exist, which is why the scope carries `fromSelection`.
+            plot->syncMerge = panes.size() > 1 && !req.fromSelection;
             m_plots.push_back(plot);
             for (quint64 id : members) m_by_layer.insert(id, plot);
         }
@@ -622,6 +673,16 @@ void ScanPixProfilePanel::compute() {
 
     m_current = plot;
     render();
+
+    // Say what was profiled and — the part that matters — what was NOT. A selected layer that
+    // is hidden is skipped, because every scope rule in the app is written in terms of visible
+    // rasters; the user picked it deliberately, so leaving it out silently would read as a bug.
+    QStringList notes;
+    notes << tr("%n profile(s) computed", "", static_cast<int>(hits.size()));
+    if (req.hiddenSkipped > 0)
+        notes << tr("%n selected layer(s) skipped as hidden", "", req.hiddenSkipped);
+    if (cancelled) notes << tr("cancelled — the curves already computed are kept");
+    m_status->setText(notes.join(QStringLiteral(" — ")));
 }
 
 // ---------------------------------------------------------------------------
@@ -660,7 +721,7 @@ void ScanPixProfilePanel::retitle(const PlotPtr& p) {
         if (!c.paneLabel.isEmpty() && !paneLabels.contains(c.paneLabel))
             paneLabels.push_back(c.paneLabel);
     p->title = buildProfileTitle(paneLabels, p->curves.size(), p->curves.front().layerName,
-                                 p->curves.front().paneLabel);
+                                 p->curves.front().paneLabel, p->syncMerge);
 }
 
 void ScanPixProfilePanel::deleteLegendRow(int legendRow) {

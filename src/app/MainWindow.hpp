@@ -88,11 +88,12 @@ private:
     // cleared) — independent of which pane is currently active.
     void       updatePaneLegends();
     int        topLayerIndexInPane(uint64_t paneId) const;
-    // The layers one Scan/Pixel Profile Compute covers (Phase 26.5, FR-ANL-12): the active
-    // layer alone, or every visible raster across its whole sync group when its pane is
-    // synced. Same InspectPaneGroup shape as the inspect selection, so both plots and the
-    // Pixel Inspector share one notion of a scope.
-    QVector<InspectPaneGroup> buildProfileScope() const;
+    // The layers one Scan/Pixel Profile Compute covers (Phase 26.5, FR-ANL-12), in priority
+    // order: the Layers-panel selection when it holds 2+ visible rasters (any panes, sync
+    // ignored); else every visible raster across the sync group when the active layer's pane
+    // is synced; else the active layer alone. Same InspectPaneGroup shape as the inspect
+    // selection, so both plots and the Pixel Inspector share one notion of a scope.
+    FvProfileScope buildProfileScope() const;
     // Pane gear-menu actions (Phase 6.1 / 6.2).
     void       closePane(MapCanvas* canvas);
     void       renamePane(MapCanvas* canvas);
