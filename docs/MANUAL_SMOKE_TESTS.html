@@ -178,7 +178,7 @@
 <main class="wrap">
   <p class="muted small">Companion catalogue to
     <a href="SRS.md">SRS</a> · <a href="SDD.md">SDD</a> · <a href="TEST_SPEC.md">TEST_SPEC</a> ·
-    <a href="FLASHVIEWER_REVAMP_PLAN.md">Revamp Plan</a>. The automated suite (171 <code>ctest</code>
+    <a href="FLASHVIEWER_REVAMP_PLAN.md">Revamp Plan</a>. The automated suite (172 <code>ctest</code>
     cases) guards unit/headless-GL logic; this is the human counterpart — end-to-end GUI scenarios run
     before a release (or per changed phase). Every scenario is traceable to the SRS FRs, SDD sections,
     and incremental fixes; the closing matrix proves every implemented FR is exercised. Marks and notes
@@ -377,7 +377,7 @@
 
   <footer>
     <p><b>FlashViewer Manual Smoke Tests</b> — sole source of truth (replaces the former
-      <code>MANUAL_SMOKE_TESTS.md</code>). v1.15 · tracks SRS v2.93 / SDD v1.92 (0.1.0 base release) + 0.2.0 work (Phases 15–26.10).
+      <code>MANUAL_SMOKE_TESTS.md</code>). v1.16 · tracks SRS v2.94 / SDD v1.93 (0.1.0 base release) + 0.2.0 work (Phases 15–26.10).
       Update on any incremental change, alongside SRS/SDD/TEST_SPEC/REVAMP_PLAN. Self-contained &amp; offline;
       results stored in your browser.</p>
   </footer>
@@ -490,7 +490,7 @@ const PHASES = [
   {st:"ST-P12-7", reg:true, steps:"Enable the HUD, then capture a screenshot (`Ctrl+Shift+S`)", expected:"The HUD overlay is absent from the captured image (like the pane chrome)", covers:"HUD omitted from grabForExport", tc:"—"}
  ]},
  {id:"P15", title:"Phase 15 (0.2.0) — Quick UI & Build/Docs Fixes", frs:"0.2.0 issues #3, #11, #2", rows:[
-  {st:"ST-P15-1", reg:true, steps:"Load ≥2 layers; single-click each row in the Layers panel to activate it — do this both in a colour-coded pane and in the default (uncoloured) pane; switch theme light↔dark", expected:"The active layer's NAME renders bold in BOTH coloured and default panes (previously only coloured rows bolded, on selection); non-active names are normal weight; bold text colour is theme-compliant (readable in light and dark)", covers:"0.2.0 #3 (bold active layer name)", tc:"—"},
+  {st:"ST-P15-1", reg:true, steps:"Load ≥2 layers; single-click each row in the Layers panel to activate it — do this both in a colour-coded pane and in the default (uncoloured) pane; switch theme light↔dark", expected:"The active layer's NAME renders bold in BOTH coloured and default panes (previously only coloured rows bolded, on selection); non-active names are normal weight; bold text colour is theme-compliant (readable in light and dark). The bold follows the active layer HOWEVER it was activated — from the panel itself as above, and from a click on the pane (0.2.0: a panel-driven activation used to bold nothing, the one place a user watches for it)", covers:"0.2.0 #3 (bold active layer name)", tc:"TC-LYR-22"},
   {st:"ST-P15-2", reg:true, steps:"Open a raster with a long file path and a projected CRS (long WKT); select it; narrow the \"Layer Properties\"/Info dock", expected:"The File value shows the full path (wraps anywhere, no clipping). The CRS value shows the full WKT pretty-printed as an INDENTED TREE — each node (GEOGCS/DATUM/SPHEROID/PROJECTION/PARAMETER/UNIT/AXIS/AUTHORITY…) on its own line, indented by nesting depth; all-caps axis values (EAST/NORTH) and numbers are NOT broken. Nothing is clipped on the right, no horizontal scrollbar, no truncation. Values remain selectable and copy back as clean, valid WKT (no stray zero-width characters; whitespace-only reformatting). Narrowing/widening the dock re-wraps long lines and the row height follows.", covers:"0.2.0 #11 (word-wrap Layer Info values)", tc:"—"},
   {st:"ST-P15-3", steps:"Inspect environment-linux.yml / environment-macos.yml; create the Linux conda env on a clean host (or a host whose system GCC < 12) and build within the activated env; read INSTALL.md §2.6 and README Building", expected:"Env is self-contained incl. the C++ toolchain — Linux bundles gcc_linux-64/gxx_linux-64/sysroot_linux-64 + libgcc-ng/libstdcxx-ng; macOS bundles cxx-compiler + libcxx; build uses the bundled compiler (CC/CXX from activation); INSTALL §2.6 + README carry the GCC-12 ABI warning; a system GCC<12 build triggers the CMake soft warning", covers:"0.2.0 #2 (conda self-containment + GCC<12 ABI warning)", tc:"—"}
  ]},
@@ -734,7 +734,7 @@ function applyFilter(){
 function readMeta(){ state.meta.build=document.getElementById("m-build").value; state.meta.tester=document.getElementById("m-tester").value; state.meta.date=document.getElementById("m-date").value; save(); }
 function doExport(){
   readMeta();
-  const payload = { doc:"FlashViewer Manual Smoke Tests", docVersion:"1.15", tracks:"SRS v2.93 / SDD v1.92", generatedAt:new Date().toISOString(), meta:state.meta, results:state.results };
+  const payload = { doc:"FlashViewer Manual Smoke Tests", docVersion:"1.16", tracks:"SRS v2.94 / SDD v1.93", generatedAt:new Date().toISOString(), meta:state.meta, results:state.results };
   const blob = new Blob([JSON.stringify(payload,null,2)], {type:"application/json"});
   const a = document.createElement("a"); a.href=URL.createObjectURL(blob);
   a.download = "fv-smoke-report-"+(state.meta.date||new Date().toISOString().slice(0,10))+".json";

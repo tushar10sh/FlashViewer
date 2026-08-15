@@ -150,6 +150,8 @@ private:
     std::vector<quint64> selectedPaneIds() const;        // highlighted group headers
 
     QColor paneColorFor(int layerIndex) const;
+    /// Re-stamp the bold-name role so it names `activeIndex`, whatever drove the change.
+    void   markActiveRow(int activeIndex);
 
     LayerManager*     m_mgr{nullptr};
     LayerTreeWidget*  m_tree{nullptr};

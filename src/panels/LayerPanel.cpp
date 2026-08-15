@@ -478,13 +478,7 @@ void LayerPanel::setLayerManager(LayerManager* mgr) {
             m_tree->clearSelection();
             m_tree->setCurrentItem(nullptr, kColName, QItemSelectionModel::NoUpdate);
         }
-        // Keep the bold-active-name role (#3) in sync with the active layer.
-        for (int g = 0; g < m_tree->topLevelItemCount(); ++g) {
-            auto* grp = m_tree->topLevelItem(g);
-            for (int c = 0; c < grp->childCount(); ++c)
-                grp->child(c)->setData(kColName, kActiveRole,
-                                       rowLayerIndex(grp->child(c)) == idx);
-        }
+        markActiveRow(idx);   // keep the bold-active-name role (#3) in step
         // setCurrentItem above ran under m_updating, so onSelectionChanged was suppressed —
         // clear any stale pane-selection highlight and re-announce the summary by hand.
         for (int g = 0; g < m_tree->topLevelItemCount(); ++g) {
@@ -821,10 +815,30 @@ void LayerPanel::onSelectionChanged() {
         if (m_mgr) m_mgr->setActiveLayer(layers.front());
         emit activeLayerChanged(layers.front());
         m_selecting = false;
+        markActiveRow(layers.front());
     }
     emit selectionSummaryChanged(static_cast<int>(layers.size()),
                                  static_cast<int>(selectedPaneIds().size()));
     updateMoveButtons();
+}
+
+// The bold name marks the ACTIVE layer (#3), and has to be re-stamped wherever the active
+// layer changes -- including when this panel is what changed it. The `activeLayerChanged`
+// handler above cannot cover that case: it returns early under `m_selecting`, the guard that
+// stops a panel-driven activation from collapsing a multi-row selection, and the early return
+// took the bold with it. So a click in the Layers panel activated the layer everywhere else in
+// the application and left its own row unbolded.
+void LayerPanel::markActiveRow(int activeIndex) {
+    for (int g = 0; g < m_tree->topLevelItemCount(); ++g) {
+        auto* grp = m_tree->topLevelItem(g);
+        for (int c = 0; c < grp->childCount(); ++c) {
+            auto* row = grp->child(c);
+            const bool active = rowLayerIndex(row) == activeIndex;
+            if (row->data(kColName, kActiveRole).toBool() != active)
+                row->setData(kColName, kActiveRole, active);
+        }
+    }
+    m_tree->viewport()->update();
 }
 
 std::vector<int> LayerPanel::selectedLayerIndices() const {

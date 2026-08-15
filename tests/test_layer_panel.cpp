@@ -619,3 +619,58 @@ TEST_CASE("TC-LYR-17 hovering the variable picker leaves the selection alone",
     CHECK(lastPanes == 1);
     CHECK_FALSE(combo->hasFocus());         // the editor must not steal focus on a hover
 }
+
+// Phase 26.10 follow-up. The ACTIVE layer's name is drawn bold, from a role stamped on the
+// name column. That role was re-stamped only in the `activeLayerChanged` handler, which
+// returns early under `m_selecting` — the guard that stops a panel-driven activation from
+// collapsing a multi-row selection. So clicking a row activated the layer everywhere else in
+// the application and left its own row unbolded: the panel that DROVE the change was the one
+// place that did not show it.
+TEST_CASE("TC-LYR-22 clicking a row bolds it as the active layer",
+          "[layerpanel][selection][TC-LYR-22]") {
+    LayerManager mgr;
+    mgr.addLayer(makePanelLayer(1, "a"));    // index 0
+    mgr.addLayer(makePanelLayer(1, "b"));    // index 1
+
+    LayerPanel panel;
+    panel.setPaneListResolver([] {
+        return std::vector<std::pair<quint64, QString>>{{1, "Pane 1"}};
+    });
+    panel.setLayerManager(&mgr);
+    panel.resize(320, 240);
+    panel.show();
+    QApplication::processEvents();
+
+    auto* tree = panelTree(panel);
+    REQUIRE(tree != nullptr);
+    auto* rowA = tree->topLevelItem(0)->child(0);
+    auto* rowB = tree->topLevelItem(0)->child(1);
+    REQUIRE(rowB != nullptr);
+
+    // The delegate's bold flag: Qt::UserRole + 2 on the name column (kActiveRole in
+    // LayerPanel.cpp). Read as state rather than rendered, so the case pins what the painter
+    // is driven by without depending on a font metric.
+    const int kActiveRole = Qt::UserRole + 2;
+    const int kColName    = 0;
+
+    clickAt(tree, tree->visualItemRect(rowB).center());
+    QApplication::processEvents();
+
+    REQUIRE(mgr.activeIndex() == 1);                              // it really did activate
+    CHECK(rowB->data(kColName, kActiveRole).toBool());            // ...and the row says so
+    CHECK_FALSE(rowA->data(kColName, kActiveRole).toBool());      // exactly one bold row
+
+    // And back, so the flag follows the active layer rather than accumulating.
+    clickAt(tree, tree->visualItemRect(rowA).center());
+    QApplication::processEvents();
+    REQUIRE(mgr.activeIndex() == 0);
+    CHECK(rowA->data(kColName, kActiveRole).toBool());
+    CHECK_FALSE(rowB->data(kColName, kActiveRole).toBool());
+
+    // A programmatic activation — a pane click elsewhere in the app — still works. That path
+    // was never broken, and must not break now that both go through one helper.
+    mgr.setActiveLayer(1);
+    QApplication::processEvents();
+    CHECK(rowB->data(kColName, kActiveRole).toBool());
+    CHECK_FALSE(rowA->data(kColName, kActiveRole).toBool());
+}
