@@ -577,3 +577,58 @@ TEST_CASE("A plot window asks to be a tool window owned by the main window", "[p
     CHECK(plot.testAttribute(Qt::WA_MacAlwaysShowToolWindow));
 #endif
 }
+
+// Phase 26.9. A plot that LOSES a member must stop describing itself by that member. Persist
+// builds a two-pane comparison; a later Compute with Persist off takes one of those layers back
+// for a plot of its own, which detaches it from the merge. The merge survives with one curve —
+// and used to keep the two-pane title and pane set it was built with, so activating the layer
+// still in it showed "2 profiles — Pane 1, Pane 2" over a legend holding only Pane 2's curve.
+// compute() and deleteCurve() both retitle from final contents; detachLayer did not.
+TEST_CASE("A plot that loses a member stops naming it", "[plots][TC-ANL-33]") {
+    FixtureFactory ff;
+    const auto fx = ff.gradientFloat(24, 24);
+
+    PlotHarness h;
+    auto a = h.add(fx.path, 1);
+    auto b = h.add(fx.path, 2);          // a different, unsynced pane
+
+    auto* persist = persistBox(h.profile);
+    REQUIRE(persist != nullptr);
+    auto* view = h.profile.findChild<FvChartView*>();
+    REQUIRE(view != nullptr);
+    const auto titleNow = [&] { return view->chart()->title(); };
+
+    // 1. Pane 1's layer profiled on its own.
+    h.profile.setScopeResolver([&] { return groupsFor({a}); });
+    h.profile.compute();
+    REQUIRE(curveCount(h.profile) == 1);
+
+    // 2-3. Persist on, Pane 2's layer profiled: its curve joins the first.
+    persist->setChecked(true);
+    h.profile.setScopeResolver([&] { return groupsFor({b}); });
+    h.profile.compute();
+    REQUIRE(curveCount(h.profile) == 2);
+    REQUIRE(titleNow().contains(QStringLiteral("Pane 1")));
+    REQUIRE(titleNow().contains(QStringLiteral("Pane 2")));
+
+    // 4. Persist off, Pane 1's layer profiled again — the newest Compute owns it, so it leaves
+    //    the merged plot and gets one of its own.
+    persist->setChecked(false);
+    h.profile.setScopeResolver([&] { return groupsFor({a}); });
+    h.profile.compute();
+    CHECK(curveCount(h.profile) == 1);
+
+    // 5. Activate Pane 2's layer: what comes up is the remainder of the merge — ONE curve, and
+    //    a title that says so. It must not still claim two profiles, and must not name Pane 1,
+    //    whose curve is now somewhere else entirely.
+    h.mgr.setActiveLayer(1);
+    CHECK(curveCount(h.profile) == 1);
+    CHECK_FALSE(titleNow().contains(QStringLiteral("Pane 1")));
+    CHECK(titleNow().contains(QStringLiteral("Pane 2")));
+    CHECK_FALSE(titleNow().contains(QStringLiteral("2 profile")));
+
+    // And back to Pane 1's layer, which owns the plot the last Compute made for it.
+    h.mgr.setActiveLayer(0);
+    CHECK(curveCount(h.profile) == 1);
+    CHECK_FALSE(titleNow().contains(QStringLiteral("Pane 2")));
+}

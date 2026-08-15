@@ -732,7 +732,16 @@ void ScanPixProfilePanel::detachLayer(quint64 layerId) {
                                    [layerId](const Curve& c) { return c.layerId == layerId; }),
                     p->curves.end());
     // A plot with no members left is unreachable — nothing can activate it again.
-    if (p->layers.isEmpty()) erasePlot(p);
+    if (p->layers.isEmpty()) { erasePlot(p); return; }
+    // What survives takes its identity from what it still HOLDS, exactly as deleteCurve and a
+    // fresh Compute do. Leaving the old identity behind was visible three ways: a heading that
+    // still counted a profile whose curve had gone (the plot Persist built, minus the layer a
+    // later Compute took back), pane labels on a legend that no longer spans panes (they are
+    // shown while `panes.size() > 1`), and an unsync discarding a merge over a pane it no
+    // longer contains.
+    p->panes.clear();
+    for (const Curve& c : p->curves) p->panes.insert(c.paneId);
+    retitle(p);
 }
 
 void ScanPixProfilePanel::retitle(const PlotPtr& p) {

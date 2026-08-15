@@ -311,7 +311,13 @@ void SpectralPlotPanel::detachLayer(quint64 layerId) {
                                    [layerId](const Curve& c) { return c.layerId == layerId; }),
                     p->curves.end());
     // A plot with no members left is unreachable — nothing can activate it again.
-    if (p->layers.isEmpty()) erasePlot(p);
+    if (p->layers.isEmpty()) { erasePlot(p); return; }
+    // The same shrink the Profile panel performs: a plot that has lost a member is no longer
+    // the scope its title names, and the pane set decides whether the legend labels curves by
+    // pane at all. Rebuild both from the curves that are actually left.
+    p->panes.clear();
+    for (const Curve& c : p->curves) p->panes.insert(c.paneId);
+    retitle(p);
 }
 
 // Name the plot after the gesture that produced it, so the title always says WHOSE spectra

@@ -493,7 +493,7 @@ hand.)
 
 ### 3.1 Run the test suite
 
-The test suite contains 173 Catch2 tests covering geo-transforms, settings,
+The test suite contains 174 Catch2 tests covering geo-transforms, settings,
 colormaps, the tile cache, the Phase 0 test-infrastructure harnesses
 (fixtures / GDAL oracle / mock network / offscreen-GL), the application shell
 (theme, layout persistence, licenses manifest), raster opening/formats
