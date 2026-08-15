@@ -15,6 +15,7 @@
 #include "plots/ScanPixProfilePanel.hpp"
 #include "widgets/ChartTools.hpp"
 #include "plots/SpectralPlotPanel.hpp"
+#include "plots/PlotWindowChrome.hpp"
 #include "gis/InspectTypes.hpp"
 #include "fixtures/FixtureFactory.hpp"
 
@@ -547,4 +548,32 @@ TEST_CASE("Closing a plot window discards its plots", "[plots][TC-ANL-28]") {
     // the same profile the close had just discarded and made a working forget look broken.
     h.profile.showLayerPlot(0);
     CHECK(curveCount(h.profile) == 0);
+}
+
+// Phase 26.9. A plot is a TOOL window owned by the main window, not a plain top-level. The
+// distinction is invisible on Windows, where an owned Qt::Window is already kept above its
+// owner — and decisive elsewhere: on macOS a parented Qt::Window sank behind the main window on
+// any click outside it. The flags are one policy in one place precisely so they can be pinned
+// here; a window manager cannot be brought into a unit test, but the request made of it can.
+TEST_CASE("A plot window asks to be a tool window owned by the main window", "[plots][TC-ANL-32]") {
+    QWidget owner;
+    QWidget plot(&owner);
+    fvApplyPlotWindowFlags(&plot);
+
+    CHECK((plot.windowFlags() & Qt::WindowType_Mask) == Qt::Tool);
+    // Still a real window to the user: it carries a title bar the frame can be dragged by and a
+    // close button, which is the only way a plot is dismissed (FR-ANL-11).
+    CHECK(plot.windowFlags().testFlag(Qt::WindowTitleHint));
+    CHECK(plot.windowFlags().testFlag(Qt::WindowCloseButtonHint));
+    // Owned, not free-floating — that is what "above the main window, never above your browser"
+    // rests on.
+    CHECK(plot.parentWidget() == &owner);
+    // Never above other applications: that would be a different, worse promise.
+    CHECK_FALSE(plot.windowFlags().testFlag(Qt::WindowStaysOnTopHint));
+
+#ifdef Q_OS_MACOS
+    // Qt hides tool windows when the application goes inactive; a plot must survive the user
+    // looking at something else and coming back.
+    CHECK(plot.testAttribute(Qt::WA_MacAlwaysShowToolWindow));
+#endif
 }

@@ -7,6 +7,7 @@
 #include "app/Settings.hpp"
 #include "plots/SpectralPlotPanel.hpp"
 #include "plots/ScanPixProfilePanel.hpp"
+#include "plots/PlotWindowChrome.hpp"   // fvApplyPlotWindowFlags — what kind of window a plot is
 #include "render/MapCanvas.hpp"
 #include "render/PaneLayout.hpp"
 #include "core/Layer.hpp"             // kDefaultPaneId
@@ -1275,12 +1276,13 @@ void MainWindow::setupDocks() {
     // The two plots are WINDOWS, not docks (Phase 26.8, FR-ANL-1/2). They were docks from
     // Phase 26 until manual testing showed the dock frame, the tab bar and the panel list were
     // all overhead for two panels nobody ever parked: what was actually wanted is a window that
-    // stays above the main one. Qt::Window with `this` as parent gives exactly that — always
-    // above FlashViewer, never above the browser you switch to. Each is closed on a fresh
-    // profile: a plot is a deliberate tool, not something that opens itself.
+    // stays above the main one — always above FlashViewer, never above the browser you switch
+    // to. A parented Qt::Window delivered that on Windows ONLY; the flags that mean it on all
+    // three platforms live in fvApplyPlotWindowFlags (see PlotWindowChrome.hpp). Each is closed
+    // on a fresh profile: a plot is a deliberate tool, not something that opens itself.
     m_spectral_panel = new SpectralPlotPanel(this);
     m_spectral_panel->setLayerManager(m_layer_mgr);
-    m_spectral_panel->setWindowFlag(Qt::Window, true);
+    fvApplyPlotWindowFlags(m_spectral_panel);
     m_spectral_panel->setWindowTitle(tr("Spectral Plot"));
     m_spectral_panel->resize(720, 430);
     m_spectral_panel->hide();
@@ -1297,7 +1299,7 @@ void MainWindow::setupDocks() {
     // sync roles, and using the SAME InspectPaneGroup shape keeps the profile's idea of a
     // "scope" identical to the Pixel Inspector's and the Spectral Plot's.
     m_profile_panel->setScopeResolver([this] { return buildProfileScope(); });
-    m_profile_panel->setWindowFlag(Qt::Window, true);
+    fvApplyPlotWindowFlags(m_profile_panel);
     m_profile_panel->setWindowTitle(tr("Scan/Pixel Profile"));
     m_profile_panel->resize(760, 520);
     m_profile_panel->hide();

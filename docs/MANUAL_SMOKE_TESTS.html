@@ -178,7 +178,7 @@
 <main class="wrap">
   <p class="muted small">Companion catalogue to
     <a href="SRS.md">SRS</a> · <a href="SDD.md">SDD</a> · <a href="TEST_SPEC.md">TEST_SPEC</a> ·
-    <a href="FLASHVIEWER_REVAMP_PLAN.md">Revamp Plan</a>. The automated suite (172 <code>ctest</code>
+    <a href="FLASHVIEWER_REVAMP_PLAN.md">Revamp Plan</a>. The automated suite (173 <code>ctest</code>
     cases) guards unit/headless-GL logic; this is the human counterpart — end-to-end GUI scenarios run
     before a release (or per changed phase). Every scenario is traceable to the SRS FRs, SDD sections,
     and incremental fixes; the closing matrix proves every implemented FR is exercised. Marks and notes
@@ -377,7 +377,7 @@
 
   <footer>
     <p><b>FlashViewer Manual Smoke Tests</b> — sole source of truth (replaces the former
-      <code>MANUAL_SMOKE_TESTS.md</code>). v1.16 · tracks SRS v2.94 / SDD v1.93 (0.1.0 base release) + 0.2.0 work (Phases 15–26.10).
+      <code>MANUAL_SMOKE_TESTS.md</code>). v1.17 · tracks SRS v2.95 / SDD v1.94 (0.1.0 base release) + 0.2.0 work (Phases 15–26.10).
       Update on any incremental change, alongside SRS/SDD/TEST_SPEC/REVAMP_PLAN. Self-contained &amp; offline;
       results stored in your browser.</p>
   </footer>
@@ -605,7 +605,8 @@ const PHASES = [
   {st:"ST-P26-39", reg:true, steps:"Select three rasters, one of which has Vis unticked, and press Compute. Read the status line under the toolbar. Then select several LARGE rasters and press Compute, and press Cancel in the progress dialog partway through", expected:"The hidden layer is not profiled and the status line says how many selected layers were skipped as hidden - it never just goes missing. The batch shows a progress dialog naming each layer as it goes, and Cancel STOPS it while KEEPING the curves already computed, saying so in the status line. A single-layer Compute shows no dialog at all", covers:"FR-ANL-12 · FR-OPS-4", tc:"TC-ANL-29"},
   {st:"ST-P26-40", reg:true, steps:"In the Scan/Pixel Profile, Compute a profile for one layer. With Persist OFF, select a layer that has never been profiled - the chart blanks. Now tick Persist curves. Select that never-profiled layer again and press Compute. Then select a layer that already has its own plot. Untick Persist. Select the never-profiled layer once more. Finally press Clear, tick Persist, and Compute", expected:"Ticking Persist brings the plot you were building back onto the chart. With Persist ON, selecting a layer with no plot leaves the chart exactly as it is - choosing what to profile next is not supposed to clear what you are assembling - and Compute ADDS its curves. Selecting a layer that HAS a plot shows that plot instead, and further Computes then build on THAT one. Unticking Persist changes nothing on screen; the next selection blanks the chart again as before. After Clear the chart is empty and the next Compute starts fresh. The Spectral Plot is unaffected by all of this", covers:"FR-ANL-12 · FR-ANL-5", tc:"TC-ANL-30"},
   {st:"ST-P26-41", reg:true, steps:"In the Spectral Plot, inspect a pixel. Tick Persist curves. Now activate a layer that has never been inspected - the chart blanks - and inspect another pixel. Then press Clear and inspect once more", expected:"The second click ADDS its curve to the earlier plot instead of starting a new one, even though the chart was blank when you clicked, and both layers then bring that plot up. The blanking on activation is correct here and unchanged - this panel is driven by clicks, not by which layer is active. After Clear, the next click starts a new plot", covers:"FR-ANL-5", tc:"TC-ANL-31"},
-  {st:"ST-P26-9", steps:"With a plot on screen, toggle the theme (View → Theme) with the plot window open. Then remove a layer that is part of the plot", expected:"The chart re-tints immediately — background, title, legend and axis labels all readable in both themes, no white box in dark mode. Removing a layer drops its curve; removing the last member leaves a blank chart rather than a stale one", covers:"FR-ANL-1 · FR-ANL-4", tc:"TC-ANL-05"}
+  {st:"ST-P26-9", steps:"With a plot on screen, toggle the theme (View → Theme) with the plot window open. Then remove a layer that is part of the plot", expected:"The chart re-tints immediately — background, title, legend and axis labels all readable in both themes, no white box in dark mode. Removing a layer drops its curve; removing the last member leaves a blank chart rather than a stale one", covers:"FR-ANL-1 · FR-ANL-4", tc:"TC-ANL-05"},
+  {st:"ST-P26-42", reg:true, steps:"PER PLATFORM (Windows, macOS, native Linux). Open the Scan/Pixel Profile and the Spectral Plot, position them over the main window, then click the map in inspect mode, click a layer row in the Layers panel, and switch to another application and back", expected:"Both plot windows stay ABOVE the main window the whole time and never cover the other application. The click outside them reaches what it was aimed at — the pixel is inspected, the layer is selected — with no flicker and no window snapping back to the front by itself. Switching away and back leaves both plots open and still above the main window (they are tool windows owned by it, not free-floating). KNOWN EXCEPTION: under WSLg the plots fall behind the main window, which is accepted — WSLg is a development convenience, not a target platform", covers:"FR-ANL-1 · FR-ANL-2 (tool windows)", tc:"TC-ANL-32 (flags only; stacking is a window-manager behaviour and cannot be automated)"}
  ]},
  {id:"X", title:"Cross-cutting integration scenario", frs:"integration of phase seams", rows:[
   {st:"ST-X-1", steps:"Load DS-L8 (UTM) and DS-DEM (4326); switch to Quarter layout; put each in its own pane and set different Project CRS per pane; enable the basemap; Sync two panes as master/slave and pan (ghost cursor + co-location); `Ctrl`+click to inspect across the sync group (source values, flush highlight in every synced pane); run NDVI in Raster Math landing in a New Pane; Export Logs and capture an Entire pane layout screenshot", expected:"Every seam holds — per-pane CRS, reprojected basemap, sync, source-pixel inspect, math output routing, screenshot composite — with no crash and a clean log", covers:"integration of FR-CRS-1/4/8, FR-PNE-8/9/10, FR-OSM-8, FR-MTH-4/8, FR-APP-5/12", tc:"—"}
@@ -734,7 +735,7 @@ function applyFilter(){
 function readMeta(){ state.meta.build=document.getElementById("m-build").value; state.meta.tester=document.getElementById("m-tester").value; state.meta.date=document.getElementById("m-date").value; save(); }
 function doExport(){
   readMeta();
-  const payload = { doc:"FlashViewer Manual Smoke Tests", docVersion:"1.16", tracks:"SRS v2.94 / SDD v1.93", generatedAt:new Date().toISOString(), meta:state.meta, results:state.results };
+  const payload = { doc:"FlashViewer Manual Smoke Tests", docVersion:"1.17", tracks:"SRS v2.95 / SDD v1.94", generatedAt:new Date().toISOString(), meta:state.meta, results:state.results };
   const blob = new Blob([JSON.stringify(payload,null,2)], {type:"application/json"});
   const a = document.createElement("a"); a.href=URL.createObjectURL(blob);
   a.download = "fv-smoke-report-"+(state.meta.date||new Date().toISOString().slice(0,10))+".json";
