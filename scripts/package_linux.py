@@ -21,8 +21,12 @@ def gather_deps(bin_path, plugins, out_lib):
             parts = line.strip().split(" => ")
             if len(parts) == 2:
                 target = parts[1].split(" ")[0].strip()
-                if os.path.exists(target) and not target.startswith("/lib64/ld-linux") and "libc.so" not in target and "libpthread.so" not in target and "libdl.so" not in target:
+                if os.path.exists(target):
                     fn = os.path.basename(target)
+                    # Exclude low-level glibc and libgcc system libraries provided by host OS
+                    excluded_prefixes = ("ld-linux", "libc.", "libm.", "libdl.", "libpthread.", "libresolv.", "librt.", "libgcc_s.")
+                    if any(fn.startswith(p) for p in excluded_prefixes):
+                        continue
                     if fn not in seen:
                         seen.add(fn)
                         dest = os.path.join(out_lib, fn)
