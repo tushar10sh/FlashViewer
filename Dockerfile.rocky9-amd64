@@ -8,7 +8,7 @@ RUN dnf install -y epel-release dnf-plugins-core \
     && dnf config-manager --set-enabled crb \
     && dnf update -y
 
-# 2. Install build toolchain, Qt6, GDAL, and dependencies
+# 2. Install build toolchain, Qt6, codecs, and dependencies
 RUN dnf install -y \
     gcc-c++ \
     cmake \
@@ -22,9 +22,19 @@ RUN dnf install -y \
     qt6-qtbase-devel \
     qt6-qtcharts-devel \
     qt6-qtsvg-devel \
-    gdal-devel \
-    gdal \
+    proj-devel \
     proj-data \
+    geos-devel \
+    libtiff-devel \
+    libgeotiff-devel \
+    libpng-devel \
+    libjpeg-turbo-devel \
+    netcdf-devel \
+    hdf5-devel \
+    libwebp-devel \
+    sqlite-devel \
+    expat-devel \
+    libcurl-devel \
     spdlog-devel \
     nlohmann-json-devel \
     glm-devel \
@@ -47,6 +57,20 @@ RUN git clone --depth 1 --branch v2.3.4 https://github.com/beltoforion/muparser.
     && cmake --build /tmp/muparser/build \
     && cmake --install /tmp/muparser/build \
     && rm -rf /tmp/muparser
+
+# 4. Build and install full GDAL with GeoTIFF, NetCDF, HDF5, JPEG, PNG, etc.
+RUN curl -sL https://github.com/OSGeo/gdal/releases/download/v3.8.5/gdal-3.8.5.tar.gz | tar -xz -C /tmp \
+    && cmake -B /tmp/gdal-3.8.5/build -S /tmp/gdal-3.8.5 -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DGDAL_BUILD_OPTIONAL_DRIVERS=ON \
+        -DOGR_BUILD_OPTIONAL_DRIVERS=ON \
+        -DBUILD_TESTING=OFF \
+        -DBUILD_PYTHON_BINDINGS=OFF \
+    && cmake --build /tmp/gdal-3.8.5/build --parallel \
+    && cmake --install /tmp/gdal-3.8.5/build \
+    && rm -rf /tmp/gdal-3.8.5 \
+    && echo '/usr/local/lib64' > /etc/ld.so.conf.d/local.conf \
+    && ldconfig
 
 WORKDIR /workspace
 
@@ -83,7 +107,7 @@ RUN cp /usr/lib64/qt6/plugins/platforms/libqxcb.so /dist/FlashViewer-bundle/plug
 
 # Copy PROJ & GDAL geodetic data tables for offline operations
 RUN cp -r /usr/share/proj/* /dist/FlashViewer-bundle/share/proj/ 2>/dev/null || true
-RUN cp -r /usr/share/gdal/* /dist/FlashViewer-bundle/share/gdal/ 2>/dev/null || true
+RUN cp -r /usr/local/share/gdal/* /usr/share/gdal/* /dist/FlashViewer-bundle/share/gdal/ 2>/dev/null || true
 
 # Copy all dependent shared libraries (.so) into bundle/lib
 RUN python3 /workspace/scripts/package_linux.py /dist/FlashViewer-bundle
@@ -109,4 +133,3 @@ RUN echo '#!/usr/bin/env bash' > /dist/FlashViewer-bundle/FlashViewer.sh \
 # Archive to Tarball
 WORKDIR /dist
 RUN tar -czvf FlashViewer-rocky9-amd64-standalone.tar.gz FlashViewer-bundle
-
