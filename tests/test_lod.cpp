@@ -14,6 +14,7 @@
 #include "io/RasterDataset.hpp"
 
 #include <cmath>
+#include <fstream>
 
 using Catch::Matchers::WithinAbs;
 
@@ -168,7 +169,7 @@ TEST_CASE("TC-RND-18 a stale tile keeps its own stretch until it is refreshed",
         tile.band_r = 1; tile.band_g = 2; tile.band_b = 3;
         tile.ch_lo[0] = kTileLo; tile.ch_hi[0] = kTileHi;
 
-        // Red re-picked → stale → the red channel still draws with band 1's range.
+        // Red re-picked → stale → the red channel still draws with band 1'range.
         const bool stale = fvTileBandsStale(tile, BandMapping::rgb(4, 2, 3));
         REQUIRE(stale);
         const FvStretch s = fvTileDrawStretch(stale, tile.ch_lo[0], tile.ch_hi[0],
@@ -177,3 +178,85 @@ TEST_CASE("TC-RND-18 a stale tile keeps its own stretch until it is refreshed",
         CHECK(s.hi == kTileHi);
     }
 }
+
+TEST_CASE("TC-RND-19 camera scale selects appropriate pyramid LOD zoom level",
+          "[render][lod][scale]") {
+    FixtureFactory fx;
+    auto f = fx.gradientFloat(2048, 2048);
+    auto ds = RasterDataset::open(f.path);
+    REQUIRE(ds);
+    RasterLayer layer(ds);
+    TileRenderer tr;
+
+    Camera cam;
+    cam.setViewportSize(512, 512);
+
+    // Native resolution (scale = 1.0 / 2048.0 geo units per pixel)
+    const double nativeScale = 1.0 / 2048.0;
+    cam.setScale(nativeScale);
+    int nativeZoom = tr.computeZoom(layer, cam);
+    CHECK(nativeZoom == 3); // 2048 / 256 = 8 -> 2^3 = 8
+
+    // Zoomed out 4x -> zoom level drops by 2
+    cam.setScale(nativeScale * 4.0);
+    int zoomOut = tr.computeZoom(layer, cam);
+    CHECK(zoomOut == 1);
+
+    // Zoomed out 8x -> zoom level drops to 0
+    cam.setScale(nativeScale * 8.0);
+    int zoomOutMax = tr.computeZoom(layer, cam);
+    CHECK(zoomOutMax == 0);
+}
+
+#include "io/PyramidBuilder.hpp"
+
+TEST_CASE("TC-PYR-01 PyramidBuilder generates valid binary overviews",
+          "[io][pyramids]") {
+    FixtureFactory fx;
+    auto f = fx.gradientFloat(1024, 1024);
+    REQUIRE_FALSE(PyramidBuilder::hasOverviews(f.path));
+    CHECK(PyramidBuilder::shouldPromptPyramids(f.path, 512));
+
+    double lastProgress = 0.0;
+    bool built = PyramidBuilder::buildPyramids(f.path, "AVERAGE", [&](double p) {
+        lastProgress = p;
+        return true;
+    });
+    REQUIRE(built);
+    CHECK(lastProgress >= 0.99);
+    CHECK(PyramidBuilder::hasOverviews(f.path));
+    CHECK_FALSE(PyramidBuilder::shouldPromptPyramids(f.path, 512));
+
+    // When opened next time, it automatically discovers and attaches the .ovr file
+    auto ds2 = RasterDataset::open(f.path);
+    REQUIRE(ds2 != nullptr);
+    CHECK(ds2->hasOverviews());
+    CHECK(ds2->overviewCount() >= 2);
+
+    TileBuffer buf = ds2->readTile(0, 0, 0, 256, {1});
+    CHECK(buf.isValid());
+}
+
+TEST_CASE("TC-PYR-02 PyramidBuilder detects external overview files on disk and respects session dismissal",
+          "[io][pyramids]") {
+    FixtureFactory fx;
+    auto f = fx.gradientFloat(1024, 1024);
+
+    // Initial state: needs pyramids
+    CHECK(PyramidBuilder::shouldPromptPyramids(f.path, 512));
+
+    // Case 1: Session dismissal
+    PyramidBuilder::dismissPrompt(f.path);
+    CHECK_FALSE(PyramidBuilder::shouldPromptPyramids(f.path, 512));
+
+    // Case 2: External .ovr file present on disk
+    auto f2 = fx.gradientFloat(1024, 1024);
+    std::string ovrPath = f2.path + ".ovr";
+    {
+        std::ofstream dummy(ovrPath);
+        dummy << "dummy_ovr";
+    }
+    CHECK(PyramidBuilder::hasOverviews(f2.path));
+    CHECK_FALSE(PyramidBuilder::shouldPromptPyramids(f2.path, 512));
+}
+

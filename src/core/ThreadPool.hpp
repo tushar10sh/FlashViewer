@@ -16,6 +16,7 @@ public:
     ThreadPool& operator=(const ThreadPool&) = delete;
 
     void submit(std::function<void()> job);
+    void clear();
 
     int pendingCount() const { return static_cast<int>(m_pending.load()); }
 

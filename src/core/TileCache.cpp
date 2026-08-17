@@ -24,24 +24,44 @@ std::shared_ptr<GpuTile> TileCache::get(const TileKey& key) {
     return it->second.first;
 }
 
-void TileCache::evict(QOpenGLFunctions_4_1_Core& gl) {
+void TileCache::touch(const TileKey& key, uint64_t frame) {
+    std::lock_guard lock(m_mutex);
+    auto it = m_map.find(key);
+    if (it != m_map.end()) {
+        it->second.first->last_touch_frame = frame;
+    }
+}
+
+void TileCache::evict(QOpenGLFunctions_4_1_Core& gl, uint64_t active_frame) {
     std::lock_guard lock(m_mutex);
     // Primary: count-based LRU cap. Secondary: byte-ceiling (FR-ERR-5) — keep
     // evicting the oldest tiles while resident bytes exceed the budget (but never
-    // drop the single most-recently-used tile, so a lone huge tile still renders).
+    // drop the single most-recently-used tile or tiles actively in use this frame).
     auto overCount = [&] { return static_cast<int>(m_map.size()) > m_capacity; };
     auto overBytes = [&] {
         return m_byte_budget != 0 && m_map.size() > 1
             && residentBytesLocked() > m_byte_budget;
     };
-    while (!m_order.empty() && (overCount() || overBytes())) {
-        TileKey lru = m_order.back();
-        auto it = m_map.find(lru);
-        if (it != m_map.end()) {
-            deleteGpuTile(gl, *it->second.first);
-            m_map.erase(it);
+
+    for (auto it = m_order.rbegin(); it != m_order.rend(); ) {
+        if (!overCount() && !overBytes()) break;
+        TileKey lru = *it;
+        auto mapIt = m_map.find(lru);
+        if (mapIt == m_map.end()) {
+            it = decltype(it)(m_order.erase(std::next(it).base()));
+            continue;
         }
-        m_order.pop_back();
+
+        // Active frame protection: do NOT evict tiles referenced in the active render pass
+        if (active_frame > 0 && mapIt->second.first->last_touch_frame == active_frame) {
+            ++it;
+            continue;
+        }
+
+        deleteGpuTile(gl, *mapIt->second.first);
+        auto listIt = mapIt->second.second;
+        m_map.erase(mapIt);
+        it = decltype(it)(m_order.erase(listIt));
     }
 }
 

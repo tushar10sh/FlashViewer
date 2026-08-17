@@ -87,18 +87,32 @@ void TileRenderer::invalidateLayer(QOpenGLFunctions_4_1_Core& gl, uint64_t layer
 // --------------------------------------------------------------------------
 // LOD helpers
 
-int TileRenderer::zoomForDims(int eff_w, int eff_h) const {
+int TileRenderer::zoomForDims(int eff_w, int eff_h, double eff_geo_w, const Camera& camera) const {
     if (eff_w <= 0 || eff_h <= 0) return 0;
-    // Always use native-resolution tiles — no LOD downsampling.
     int max_zoom = static_cast<int>(std::ceil(std::log2(
         std::max(eff_w, eff_h) / static_cast<double>(kTileSize))));
-    return std::max(0, max_zoom);
+    max_zoom = std::max(0, max_zoom);
+
+    if (camera.viewportWidth() <= 1 || camera.viewportHeight() <= 1 ||
+        camera.scale() <= 0.0 || eff_geo_w <= 0.0) {
+        return max_zoom;
+    }
+
+    double native_pixel_geo = eff_geo_w / eff_w;
+    if (native_pixel_geo <= 0.0) return max_zoom;
+
+    double ratio = camera.scale() / native_pixel_geo;
+    if (ratio <= 1.0) return max_zoom;
+
+    int lod_drop = static_cast<int>(std::floor(std::log2(ratio)));
+    int lod_zoom = max_zoom - lod_drop;
+    return std::clamp(lod_zoom, 0, max_zoom);
 }
 
-int TileRenderer::computeZoom(const RasterLayer& layer, const Camera& /*camera*/) const {
+int TileRenderer::computeZoom(const RasterLayer& layer, const Camera& camera) const {
     auto* ds = layer.dataset();
     if (!ds) return 0;
-    return zoomForDims(ds->width(), ds->height());
+    return zoomForDims(ds->width(), ds->height(), layer.extent().width(), camera);
 }
 
 std::vector<TileKey> TileRenderer::visibleTilesFor(uint64_t layer_id, const Extent& img,
@@ -268,9 +282,7 @@ bool TileRenderer::ensureTile(QOpenGLFunctions_4_1_Core& gl,
                     } else {
                         bands = {bm.red_idx, bm.green_idx, bm.blue_idx};
                     }
-                    // Read at native resolution (1:1 texel-to-pixel) so texels
-                    // are square and GL_NEAREST shows clean pixel boundaries. Tiling is
-                    // against the EFFECTIVE (reprojected) grid; readWarpedRegion warps the
+                    // Tiling is against the EFFECTIVE (reprojected) grid; readWarpedRegion warps the
                     // window into the Project CRS (or reads source pixels when sameAsSource).
                     int n     = 1 << zoom;
                     int src_w = (eff_w + n - 1) / n;
@@ -279,16 +291,26 @@ bool TileRenderer::ensureTile(QOpenGLFunctions_4_1_Core& gl,
                     int yoff  = ty * src_h;
                     int act_w = std::min(src_w, eff_w - xoff);
                     int act_h = std::min(src_h, eff_h - yoff);
-                    // Read a neighbour apron (kTileApron) around the tile, clamped
-                    // to the dataset, so edge interpolation samples real neighbours
-                    // (seamless bicubic — FR-RND-10). Quad maps to the inner rect.
-                    const int H = kTileApron;
-                    int rx0 = std::max(0, xoff - H), ry0 = std::max(0, yoff - H);
-                    int rx1 = std::min(eff_w, xoff + act_w + H);
-                    int ry1 = std::min(eff_h, yoff + act_h + H);
+
+                    // Destination tile dimensions (bounded to kTileSize = 256 for smooth LOD)
+                    int dst_act_w = std::min(kTileSize, std::max(1, static_cast<int>(std::round(static_cast<double>(kTileSize) * act_w / src_w))));
+                    int dst_act_h = std::min(kTileSize, std::max(1, static_cast<int>(std::round(static_cast<double>(kTileSize) * act_h / src_h))));
+
+                    // Read a neighbour apron around the tile, clamped to the dataset
+                    int src_hx = (dst_act_w >= act_w) ? kTileApron : static_cast<int>(std::ceil(kTileApron * static_cast<double>(act_w) / dst_act_w));
+                    int src_hy = (dst_act_h >= act_h) ? kTileApron : static_cast<int>(std::ceil(kTileApron * static_cast<double>(act_h) / dst_act_h));
+                    int rx0 = std::max(0, xoff - src_hx), ry0 = std::max(0, yoff - src_hy);
+                    int rx1 = std::min(eff_w, xoff + act_w + src_hx);
+                    int ry1 = std::min(eff_h, yoff + act_h + src_hy);
                     int read_w = rx1 - rx0, read_h = ry1 - ry0;
+
+                    int dst_w = std::max(1, static_cast<int>(std::round(static_cast<double>(read_w) * dst_act_w / act_w)));
+                    int dst_h = std::max(1, static_cast<int>(std::round(static_cast<double>(read_h) * dst_act_h / act_h)));
+                    int inner_x = static_cast<int>(std::round(static_cast<double>(xoff - rx0) * dst_act_w / act_w));
+                    int inner_y = static_cast<int>(std::round(static_cast<double>(yoff - ry0) * dst_act_h / act_h));
+
                     TileBuffer buf = ds->readWarpedRegion(project_wkt, rx0, ry0, read_w, read_h,
-                                                          read_w, read_h, bands, resampling);
+                                                          dst_w, dst_h, bands, resampling);
                     if (!buf.isValid()) {
                         tile_ref->refreshing.store(false, std::memory_order_release);
                         return;
@@ -296,8 +318,8 @@ bool TileRenderer::ensureTile(QOpenGLFunctions_4_1_Core& gl,
                     std::lock_guard lock(tile_ref->data_mutex);
                     tile_ref->tile_w = buf.width;
                     tile_ref->tile_h = buf.height;
-                    tile_ref->inner_x = xoff - rx0; tile_ref->inner_y = yoff - ry0;
-                    tile_ref->inner_w = act_w;      tile_ref->inner_h = act_h;
+                    tile_ref->inner_x = inner_x;   tile_ref->inner_y = inner_y;
+                    tile_ref->inner_w = dst_act_w; tile_ref->inner_h = dst_act_h;
                     tile_ref->pending_gray   = gray;
                     tile_ref->pending_band_r = gray ? bm.grayBand() : bm.red_idx;
                     tile_ref->pending_band_g = gray ? bm.grayBand() : bm.green_idx;
@@ -343,10 +365,6 @@ bool TileRenderer::ensureTile(QOpenGLFunctions_4_1_Core& gl,
         } else {
             bands = {bm.red_idx, bm.green_idx, bm.blue_idx};
         }
-        // Read at native resolution (1:1 texel-to-pixel) so texels are square
-        // and GL_NEAREST shows clean pixel boundaries without GDAL upsampling. Tiling
-        // is against the EFFECTIVE (reprojected) grid; readWarpedRegion warps the window
-        // into the Project CRS (or reads raw source pixels when sameAsSource).
         int n     = 1 << zoom;
         int src_w = (eff_w + n - 1) / n;
         int src_h = (eff_h + n - 1) / n;
@@ -354,23 +372,33 @@ bool TileRenderer::ensureTile(QOpenGLFunctions_4_1_Core& gl,
         int yoff  = ty * src_h;
         int act_w = std::min(src_w, eff_w - xoff);
         int act_h = std::min(src_h, eff_h - yoff);
-        // Read a neighbour apron (kTileApron) around the tile, clamped to the
-        // dataset, so edge interpolation samples real neighbours (seamless bicubic
-        // — FR-RND-10). The quad maps to the inner rect (set below).
-        const int H = kTileApron;
-        int rx0 = std::max(0, xoff - H), ry0 = std::max(0, yoff - H);
-        int rx1 = std::min(eff_w, xoff + act_w + H);
-        int ry1 = std::min(eff_h, yoff + act_h + H);
+
+        // Destination tile dimensions (bounded to kTileSize = 256 for smooth LOD)
+        int dst_act_w = std::min(kTileSize, std::max(1, static_cast<int>(std::round(static_cast<double>(kTileSize) * act_w / src_w))));
+        int dst_act_h = std::min(kTileSize, std::max(1, static_cast<int>(std::round(static_cast<double>(kTileSize) * act_h / src_h))));
+
+        // Read a neighbour apron around the tile, clamped to the dataset
+        int src_hx = (dst_act_w >= act_w) ? kTileApron : static_cast<int>(std::ceil(kTileApron * static_cast<double>(act_w) / dst_act_w));
+        int src_hy = (dst_act_h >= act_h) ? kTileApron : static_cast<int>(std::ceil(kTileApron * static_cast<double>(act_h) / dst_act_h));
+        int rx0 = std::max(0, xoff - src_hx), ry0 = std::max(0, yoff - src_hy);
+        int rx1 = std::min(eff_w, xoff + act_w + src_hx);
+        int ry1 = std::min(eff_h, yoff + act_h + src_hy);
         int read_w = rx1 - rx0, read_h = ry1 - ry0;
+
+        int dst_w = std::max(1, static_cast<int>(std::round(static_cast<double>(read_w) * dst_act_w / act_w)));
+        int dst_h = std::max(1, static_cast<int>(std::round(static_cast<double>(read_h) * dst_act_h / act_h)));
+        int inner_x = static_cast<int>(std::round(static_cast<double>(xoff - rx0) * dst_act_w / act_w));
+        int inner_y = static_cast<int>(std::round(static_cast<double>(yoff - ry0) * dst_act_h / act_h));
+
         TileBuffer buf = ds->readWarpedRegion(project_wkt, rx0, ry0, read_w, read_h,
-                                              read_w, read_h, bands, resampling);
+                                              dst_w, dst_h, bands, resampling);
         if (!buf.isValid()) return;
 
         std::lock_guard lock(tile_ref->data_mutex);
         tile_ref->tile_w = buf.width;
         tile_ref->tile_h = buf.height;
-        tile_ref->inner_x = xoff - rx0; tile_ref->inner_y = yoff - ry0;
-        tile_ref->inner_w = act_w;      tile_ref->inner_h = act_h;
+        tile_ref->inner_x = inner_x;   tile_ref->inner_y = inner_y;
+        tile_ref->inner_w = dst_act_w; tile_ref->inner_h = dst_act_h;
         tile_ref->pending_gray   = gray;
         tile_ref->pending_band_r = gray ? bm.grayBand() : bm.red_idx;
         tile_ref->pending_band_g = gray ? bm.grayBand() : bm.green_idx;
@@ -513,6 +541,9 @@ bool TileRenderer::render(QOpenGLFunctions_4_1_Core& gl,
                            uint32_t crs_epoch) {
     if (!m_initialized) return true;
 
+    ++m_frame_counter;
+    if (m_frame_counter == 0) ++m_frame_counter;
+
     flushPendingUploads(gl);
 
     glm::mat4 vp = camera.viewProjMatrix();
@@ -554,7 +585,7 @@ bool TileRenderer::render(QOpenGLFunctions_4_1_Core& gl,
 
         const int eff_w = wv.width;
         const int eff_h = wv.height;
-        int zoom = zoomForDims(eff_w, eff_h);
+        int zoom = zoomForDims(eff_w, eff_h, wv.extent.width(), camera);
         auto keys = visibleTilesFor(rl->layerId(), wv.extent, camera, zoom, crs_epoch);
 
         // Use nearest-neighbor magnification when one image pixel ≥ one screen pixel
@@ -562,17 +593,18 @@ bool TileRenderer::render(QOpenGLFunctions_4_1_Core& gl,
         bool use_nearest = (pixel_geo_w >= camera.scale());
 
         for (const auto& key : keys) {
+            m_cache.touch(key, m_frame_counter);
             if (!ensureTile(gl, key, rl, eff_w, eff_h, read_wkt, resamp)) {
                 all_ready = false;
-                // Fall back: draw a coarser tile that covers this area
+                // Fall back: draw a coarser tile that covers this area ONLY if already resident
                 for (int fz = zoom - 1; fz >= 0; --fz) {
                     int diff = zoom - fz;
                     TileKey fallback{key.layer_id, fz,
                         key.tx >> diff, key.ty >> diff, key.crs_epoch};
-                    if (ensureTile(gl, fallback, rl, eff_w, eff_h, read_wkt, resamp)) {
-                        auto ft = m_cache.get(fallback);
-                        if (ft && ft->state == TileState::Ready)
-                            drawTile(gl, fallback, *ft, vp, rl, wv, layer_ptr->opacity(), use_nearest);
+                    auto ft = m_cache.get(fallback);
+                    if (ft && ft->state == TileState::Ready) {
+                        m_cache.touch(fallback, m_frame_counter);
+                        drawTile(gl, fallback, *ft, vp, rl, wv, layer_ptr->opacity(), use_nearest);
                         break;
                     }
                 }
@@ -588,6 +620,6 @@ bool TileRenderer::render(QOpenGLFunctions_4_1_Core& gl,
         }
     }
 
-    m_cache.evict(gl);
+    m_cache.evict(gl, m_frame_counter);
     return all_ready;
 }

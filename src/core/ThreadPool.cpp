@@ -35,3 +35,12 @@ void ThreadPool::submit(std::function<void()> job) {
     }
     m_cv.notify_one();
 }
+
+void ThreadPool::clear() {
+    std::lock_guard lock(m_mutex);
+    while (!m_queue.empty()) {
+        m_queue.pop();
+        --m_pending;
+    }
+}
+

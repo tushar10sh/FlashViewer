@@ -1,4 +1,5 @@
 #include "io/RasterDataset.hpp"
+#include "gis/GeoTransform4326.hpp"
 #include "util/Logger.hpp"
 #include "util/Percentile.hpp"
 
@@ -143,6 +144,14 @@ bool RasterDataset::isGeographic() const {
     return *m_is_geographic;
 }
 
+std::shared_ptr<GeoTransform4326> RasterDataset::geoTransform4326() const {
+    return std::make_shared<GeoTransform4326>(m_geotransform, m_crs_wkt);
+}
+
+std::shared_ptr<CrsTransformer> RasterDataset::wgs84Transformer() const {
+    return fvGetWgs84Transformer(m_crs_wkt);
+}
+
 std::string RasterDataset::bandDescription(int band_1based) const {
     std::lock_guard lock(m_mutex);
     if (!m_ds || band_1based < 1 || band_1based > m_band_count)
@@ -161,6 +170,17 @@ bool RasterDataset::bandHasColorTable(int band_1based) const {
     if (band_1based < 1 || band_1based > static_cast<int>(m_colortable_cache.size()))
         return false;
     return m_colortable_cache[static_cast<size_t>(band_1based - 1)];
+}
+
+bool RasterDataset::hasOverviews(int band_1based) const {
+    return overviewCount(band_1based) > 0;
+}
+
+int RasterDataset::overviewCount(int band_1based) const {
+    std::lock_guard lock(m_mutex);
+    if (!m_ds || band_1based < 1 || band_1based > m_band_count) return 0;
+    GDALRasterBand* band = m_ds->GetRasterBand(band_1based);
+    return band ? band->GetOverviewCount() : 0;
 }
 
 // --------------------------------------------------------------------------

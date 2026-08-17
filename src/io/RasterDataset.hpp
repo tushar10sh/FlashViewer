@@ -54,6 +54,11 @@ public:
     void setGeoTransformOverride(const double gt[6]);
     void setCrsOverride(const std::string& wkt);
 
+    /// Return the GeoTransform4326 object bridging pixel (col, row), image geo (x, y), and WGS84 (lat, lon).
+    std::shared_ptr<class GeoTransform4326> geoTransform4326() const;
+    /// Return the cached CrsTransformer for this dataset's projection to EPSG:4326.
+    std::shared_ptr<class CrsTransformer>   wgs84Transformer() const;
+
     std::string bandDescription(int band_1based) const;
 
     // The band's on-disk GDAL data type, returned as its GDALDataType int value (GDT_*), or -1
@@ -62,6 +67,10 @@ public:
     int  bandDataType(int band_1based) const;
     // True when the band carries a palette/colortable (categorical hint → nearest default).
     bool bandHasColorTable(int band_1based) const;
+
+    /// True when the band has overview pyramids (internal or external .ovr).
+    bool hasOverviews(int band_1based = 1) const;
+    int  overviewCount(int band_1based = 1) const;
 
     // FR-CAP-3: true when the raster carries data FlashViewer cannot faithfully
     // represent in its real-valued Float32 pipeline (currently: complex bands, whose

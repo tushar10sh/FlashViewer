@@ -48,6 +48,7 @@ struct GpuTile {
     // Inner (logical) tile rect within the aproned texture, in texels — the region
     // the quad maps to (FR-RND-10 seamless tiled interpolation). 0 = whole texture.
     int   inner_x{0}, inner_y{0}, inner_w{0}, inner_h{0};
+    uint64_t last_touch_frame{0};
     std::mutex data_mutex;
 };
 
@@ -57,8 +58,9 @@ public:
 
     std::shared_ptr<GpuTile> getOrCreate(const TileKey& key);
     std::shared_ptr<GpuTile> get(const TileKey& key);
+    void touch(const TileKey& key, uint64_t frame);
 
-    void evict(QOpenGLFunctions_4_1_Core& gl);
+    void evict(QOpenGLFunctions_4_1_Core& gl, uint64_t active_frame = 0);
     void removeLayer(uint64_t layer_id, QOpenGLFunctions_4_1_Core& gl);
     void clear(QOpenGLFunctions_4_1_Core& gl);
 

@@ -117,7 +117,7 @@ private:
 
     // Zoom / tile math against explicit (possibly warped) dimensions — the CRS-aware
     // core the public source-based helpers delegate to.
-    int zoomForDims(int eff_w, int eff_h) const;
+    int zoomForDims(int eff_w, int eff_h, double eff_geo_w = 0.0, const Camera& camera = {}) const;
     std::vector<TileKey> visibleTilesFor(uint64_t layer_id, const Extent& img,
                                          const Camera& camera, int zoom,
                                          uint32_t crs_epoch) const;
@@ -164,6 +164,7 @@ private:
 
     bool m_initialized{false};
     bool m_vram_warned{false};   // one-shot GL_OUT_OF_MEMORY report gate (FR-ERR-5)
+    uint64_t m_frame_counter{0}; // active frame generation index for cache eviction protection
 
     ReprojectStatusFn m_reproject_cb;   // per-layer reprojection status (Phase 11)
 };
