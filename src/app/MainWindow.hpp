@@ -32,6 +32,7 @@ class BandSelectorWidget;
 class ColormapSelectorWidget;
 class RasterInfoPanel;
 class AttributeInspector;
+class NumericDumpPanel;
 class RasterLayer;
 class RasterDataset;
 class SpectralPlotPanel;
@@ -211,6 +212,7 @@ private:
     RasterInfoPanel*       m_info_panel{nullptr};
     NoDataWidget*          m_nodata_widget{nullptr};
     AttributeInspector*    m_attr_insp{nullptr};
+    NumericDumpPanel*      m_numeric_dump{nullptr};
 
     // View → Display Resampling (FR-RND-10): radio group + the 3 mode actions,
     // kept so onActiveLayerChanged can reflect the active layer's current mode.

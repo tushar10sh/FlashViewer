@@ -33,6 +33,7 @@ void PixelHighlightOverlay::paintEvent(QPaintEvent*) {
     QPolygonF poly;
     poly.reserve(4);
     double minx = 0, miny = 0, maxx = 0, maxy = 0;
+    double sumX = 0.0, sumY = 0.0;
     for (int i = 0; i < 4; ++i) {
         auto s = m_cam->geoToScreen(m_corners[i].x(), m_corners[i].y());
         if (i == 0) { minx = maxx = s.x; miny = maxy = s.y; }
@@ -40,16 +41,39 @@ void PixelHighlightOverlay::paintEvent(QPaintEvent*) {
             minx = std::min(minx, s.x); maxx = std::max(maxx, s.x);
             miny = std::min(miny, s.y); maxy = std::max(maxy, s.y);
         }
+        sumX += s.x;
+        sumY += s.y;
         poly << QPointF(s.x, s.y);
     }
 
-    // Don't draw when the pixel is too small — a 2px border on a 1-3px target looks like an
-    // indistinct blob with uneven edge thickness. Gauge size by the ring's screen bounds.
-    if ((maxx - minx) < 4.0 || (maxy - miny) < 4.0) return;
+    double cx = sumX / 4.0;
+    double cy = sumY / 4.0;
 
     QPainter p(this);
-    p.setRenderHint(QPainter::Antialiasing);
-    p.setPen(QPen(Qt::red, 2));
+    p.setRenderHint(QPainter::Antialiasing, true);
+
+    double boxW = maxx - minx;
+    double boxH = maxy - miny;
+
+    // If the pixel is large enough on screen, outline the pixel boundary
+    if (boxW >= 4.0 && boxH >= 4.0) {
+        p.setPen(QPen(QColor(230, 20, 20, 230), 2));
+        p.setBrush(QColor(255, 0, 0, 35));
+        p.drawPolygon(poly);
+    }
+
+    // Always draw a small, crisp red target marker at the selected pixel center
+    // 1. Contrast halo / shadow (white outer stroke)
+    p.setPen(QPen(QColor(255, 255, 255, 220), 3.0, Qt::SolidLine, Qt::RoundCap));
+    p.drawLine(QPointF(cx - 6.0, cy), QPointF(cx + 6.0, cy));
+    p.drawLine(QPointF(cx, cy - 6.0), QPointF(cx, cy + 6.0));
     p.setBrush(Qt::NoBrush);
-    p.drawPolygon(poly);
+    p.drawEllipse(QPointF(cx, cy), 3.5, 3.5);
+
+    // 2. Foreground red crosshair + center dot
+    p.setPen(QPen(QColor(220, 20, 20, 255), 1.5, Qt::SolidLine, Qt::RoundCap));
+    p.drawLine(QPointF(cx - 6.0, cy), QPointF(cx + 6.0, cy));
+    p.drawLine(QPointF(cx, cy - 6.0), QPointF(cx, cy + 6.0));
+    p.setBrush(QColor(220, 20, 20, 255));
+    p.drawEllipse(QPointF(cx, cy), 2.5, 2.5);
 }

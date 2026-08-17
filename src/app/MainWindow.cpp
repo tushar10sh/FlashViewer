@@ -14,11 +14,14 @@
 #include "core/RasterLayer.hpp"
 #include "core/LayerManager.hpp"
 #include "io/DatasetFactory.hpp"
+#include "io/PyramidBuilder.hpp"
 #include "io/BinaryImportDialog.hpp"
 #include "io/BinaryRasterParser.hpp"
 #include "io/BandStackVrt.hpp"
 #include "io/CloudReader.hpp"
 #include "io/UrlGuard.hpp"
+#include <QProgressDialog>
+#include <QMessageBox>
 #include "util/Logger.hpp"
 #include "util/ErrorReporter.hpp"
 #include "util/TempFile.hpp"
@@ -33,6 +36,7 @@
 #include "panels/ColormapSelectorWidget.hpp"
 #include "panels/RasterInfoPanel.hpp"
 #include "panels/NoDataWidget.hpp"
+#include "panels/NumericDumpPanel.hpp"
 #include "gis/AttributeInspector.hpp"
 #include "gis/CrsUtil.hpp"
 #include "gis/CrsPickerDialog.hpp"
@@ -258,7 +262,7 @@ MainWindow::MainWindow(QWidget* parent)
     m_canvas->osmRenderer()->provider()->setUrlTemplate(
         Settings::instance().osmTileUrl());
 
-    // GPU Monitor poll (FR-APP-11): sum every pane's estimated resident VRAM.
+    // Resource Monitor poll: sum every pane's estimated resident VRAM, and sample CPU/RAM/GPU.
     m_gpu_timer = new QTimer(this);
     m_gpu_timer->setInterval(250);
     connect(m_gpu_timer, &QTimer::timeout, this, [this] {
@@ -368,6 +372,52 @@ void MainWindow::openFiles(const QStringList& paths) {
                 continue;
             }
             // No subdatasets listed — fall through to direct open (single-variable file)
+        }
+
+        if (PyramidBuilder::shouldPromptPyramids(stdPath)) {
+            auto [rw, rh] = PyramidBuilder::getRasterDimensions(stdPath);
+            const QString fname = QFileInfo(path).fileName();
+            auto res = QMessageBox::question(
+                this,
+                tr("Generate Image Pyramids?"),
+                tr("The raster \"%1\" (%2 × %3) does not have overview pyramids.\n\n"
+                   "Generating image pyramids allows instant zooming, smooth panning, and minimal memory usage.\n\n"
+                   "Would you like to build binary pyramids next to the file?")
+                    .arg(fname).arg(rw).arg(rh),
+                QMessageBox::Yes | QMessageBox::No,
+                QMessageBox::Yes);
+
+            // Remember that user answered or dismissed the prompt for this path
+            PyramidBuilder::dismissPrompt(stdPath);
+
+            if (res == QMessageBox::Yes) {
+                QProgressDialog progress(
+                    tr("Generating image pyramids for %1...").arg(fname),
+                    tr("Cancel"), 0, 100, this);
+                progress.setWindowTitle(tr("Building Pyramids"));
+                progress.setWindowModality(Qt::WindowModal);
+                progress.setMinimumDuration(0);
+                progress.setValue(0);
+                progress.show();
+                QApplication::processEvents();
+
+                bool ok = PyramidBuilder::buildPyramids(
+                    stdPath, "AVERAGE",
+                    [&progress](double fraction) {
+                        progress.setValue(static_cast<int>(fraction * 100));
+                        QApplication::processEvents();
+                        return !progress.wasCanceled();
+                    });
+
+                progress.setValue(100);
+                if (ok) {
+                    statusBar()->showMessage(
+                        tr("Generated pyramids for %1").arg(fname), 4000);
+                } else if (progress.wasCanceled()) {
+                    statusBar()->showMessage(
+                        tr("Pyramid generation cancelled for %1").arg(fname), 4000);
+                }
+            }
         }
 
         auto ds = DatasetFactory::open(stdPath, &needsBinary);
@@ -959,8 +1009,12 @@ void MainWindow::setupToolBar() {
     actInspect->setShortcut(QKeySequence(Qt::Key_I));
     // Inspect mode is an app-wide UI mode: apply it to every pane (Phase 6).
     connect(actInspect, &QAction::toggled, this, [this](bool on) {
-        for (int i = 0; i < m_pane_layout->paneCount(); ++i)
-            if (auto* c = m_pane_layout->paneCanvas(i)) c->setInspectMode(on);
+        for (int i = 0; i < m_pane_layout->paneCount(); ++i) {
+            if (auto* c = m_pane_layout->paneCanvas(i)) {
+                c->setInspectMode(on);
+                if (!on) c->clearInspectHighlight();
+            }
+        }
     });
     connect(m_canvas, &MapCanvas::inspectModeChanged, actInspect, &QAction::setChecked);
     toolbar->addAction(actInspect);
@@ -1253,13 +1307,13 @@ void MainWindow::setupDocks() {
     // still alone — splitDockWidget only creates a real vertical split against a dock
     // that is not yet tabbed (once attrDock is tabbed in below, a split would instead
     // add a new tab). attrDock then joins the TOP group; GPU Monitor stays bottom.
-    auto* gpuDock = new QDockWidget(tr("GPU Monitor"), this);
+    auto* gpuDock = new QDockWidget(tr("Resource Monitor"), this);
     gpuDock->setObjectName("GpuDock");
     gpuDock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea
                               | Qt::BottomDockWidgetArea);
     m_gpu_monitor = new GpuMonitorPanel(gpuDock);
     gpuDock->setWidget(m_gpu_monitor);
-    splitDockWidget(infoDock, gpuDock, Qt::Vertical);   // GPU Monitor below Info
+    splitDockWidget(infoDock, gpuDock, Qt::Vertical);   // Resource Monitor below Info
 
     auto* attrDock = new QDockWidget(tr("Pixel Inspector"), this);
     attrDock->setObjectName("AttrDock");
@@ -1270,6 +1324,16 @@ void MainWindow::setupDocks() {
     attrDock->setWidget(m_attr_insp);
     addDockWidget(Qt::RightDockWidgetArea, attrDock);
     tabifyDockWidget(infoDock, attrDock);               // Pixel Inspector joins the TOP group
+
+    auto* numDumpDock = new QDockWidget(tr("Numeric Dump"), this);
+    numDumpDock->setObjectName("NumericDumpDock");
+    numDumpDock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea
+                                 | Qt::BottomDockWidgetArea);
+    m_numeric_dump = new NumericDumpPanel(numDumpDock);
+    m_numeric_dump->setLayerManager(m_layer_mgr);
+    numDumpDock->setWidget(m_numeric_dump);
+    addDockWidget(Qt::RightDockWidgetArea, numDumpDock);
+    tabifyDockWidget(attrDock, numDumpDock);            // Numeric Dump joins next to Pixel Inspector
 
     resizeDocks({infoDock, gpuDock}, {300, 300}, Qt::Vertical);   // ≈ half each
 
@@ -1308,14 +1372,15 @@ void MainWindow::setupDocks() {
     // Track every dock with its fresh-build placement so View → Panels can re-open a
     // closed panel at its original location (FR-APP-9). reserve() first: buildPanelsMenu
     // captures &element into lambdas, so the vector must never reallocate afterward.
-    m_docks.reserve(7);
-    m_docks.append({layerDock, Qt::LeftDockWidgetArea,   nullptr,  nullptr});
-    m_docks.append({propDock,  Qt::LeftDockWidgetArea,   nullptr,  nullptr});
-    m_docks.append({histoDock, Qt::LeftDockWidgetArea,   propDock, nullptr});
-    m_docks.append({infoDock,  Qt::RightDockWidgetArea,  nullptr,  nullptr});
-    m_docks.append({attrDock,  Qt::RightDockWidgetArea,  infoDock, nullptr});
-    m_docks.append({logDock,   Qt::BottomDockWidgetArea, nullptr,  nullptr});
-    m_docks.append({gpuDock,   Qt::RightDockWidgetArea,  nullptr,  nullptr});
+    m_docks.reserve(8);
+    m_docks.append({layerDock,   Qt::LeftDockWidgetArea,   nullptr,  nullptr});
+    m_docks.append({propDock,    Qt::LeftDockWidgetArea,   nullptr,  nullptr});
+    m_docks.append({histoDock,   Qt::LeftDockWidgetArea,   propDock, nullptr});
+    m_docks.append({infoDock,    Qt::RightDockWidgetArea,  nullptr,  nullptr});
+    m_docks.append({attrDock,    Qt::RightDockWidgetArea,  infoDock, nullptr});
+    m_docks.append({numDumpDock, Qt::RightDockWidgetArea,  attrDock, nullptr});
+    m_docks.append({logDock,     Qt::BottomDockWidgetArea, nullptr,  nullptr});
+    m_docks.append({gpuDock,     Qt::RightDockWidgetArea,  nullptr,  nullptr});
 
     // Default left-column split: the Layers list (top) and the tabbed Layer
     // Properties / Histogram group (bottom) each take ≈ half the column's height, so
@@ -1398,8 +1463,8 @@ void MainWindow::reopenDockToDefault(const DockEntry& e) {
 }
 
 void MainWindow::setupStatusBar() {
-    m_coord_label = new QLabel("X: --  Y: --", this);
-    m_coord_label->setMinimumWidth(280);
+    m_coord_label = new QLabel("X: --  Y: --  |  Lat: --  Lon: --", this);
+    m_coord_label->setMinimumWidth(380);
     statusBar()->addWidget(m_coord_label);
     statusBar()->addWidget(new QLabel(" | ", this));
 
@@ -1560,9 +1625,9 @@ void MainWindow::wireCanvasSignals(MapCanvas* canvas) {
     });
 
     // Status bar — whichever pane the cursor is over updates the readouts.
-    connect(canvas, &MapCanvas::cursorGeoPos, this, [this](double x, double y) {
-        m_coord_label->setText(QString("X: %1  Y: %2")
-            .arg(x, 12, 'f', 6).arg(y, 12, 'f', 6));
+    connect(canvas, &MapCanvas::cursorGeoPos, this, [this, canvas](double x, double y) {
+        auto fmt = fvFormatCoordinates(x, y, canvas->projectCrsWkt());
+        m_coord_label->setText(fmt.single_line);
     });
     connect(canvas, &MapCanvas::cursorPixelPos, this, [this](int col, int row) {
         m_pixel_label->setText(
@@ -2073,6 +2138,8 @@ void MainWindow::inspectFromPane(MapCanvas* clicked, double gx, double gy, bool 
     // layer's SOURCE pixel by transforming into the layer's source CRS (Phase 11, FR-CRS-4).
     const std::string geoWkt = clicked->projectCrsWkt();
     m_attr_insp->inspectGroups(gx, gy, geoWkt, groups);
+    if (m_numeric_dump)
+        m_numeric_dump->inspectGroups(gx, gy, geoWkt, groups);
 
     // The Spectral Plot is fed the SAME groups (Phase 26), so its curves and the inspector's
     // rows always describe one selection: left-click ⇒ the topmost/representative layer of

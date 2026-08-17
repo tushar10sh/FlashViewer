@@ -632,3 +632,44 @@ TEST_CASE("A plot that loses a member stops naming it", "[plots][TC-ANL-33]") {
     CHECK(curveCount(h.profile) == 1);
     CHECK_FALSE(titleNow().contains(QStringLiteral("Pane 2")));
 }
+
+#include "panels/NumericDumpPanel.hpp"
+#include "gis/PixelSampler.hpp"
+
+TEST_CASE("TC-ANL-20 fvSamplePixelPatch samples 11x11 patch and NumericDumpPanel renders correctly", "[gis][numericdump]") {
+    FixtureFactory ff;
+    auto f = ff.gradientFloat(64, 64);
+    auto ds = RasterDataset::open(f.path);
+    REQUIRE(ds != nullptr);
+
+    auto layer = std::make_shared<RasterLayer>(ds);
+    REQUIRE(layer != nullptr);
+
+    glm::dvec2 geo = ds->geoTransform().pixelToGeo(10, 10);
+
+    PixelPatchSample patch;
+    REQUIRE(fvSamplePixelPatch(layer.get(), geo.x, geo.y, ds->crsWkt(), 11, patch));
+    CHECK(patch.valid);
+    CHECK(patch.center_col == 10);
+    CHECK(patch.center_row == 10);
+    CHECK(patch.start_col == 5);
+    CHECK(patch.start_row == 5);
+    CHECK(patch.channels.size() == 1);
+    CHECK(patch.channels[0].size() == 11);
+    CHECK(patch.channels[0][0].size() == 11);
+
+    CHECK(patch.channels[0][5][5].is_valid);
+    CHECK_FALSE(patch.channels[0][5][5].is_nodata);
+
+    NumericDumpPanel panel;
+    LayerManager mgr;
+    mgr.addLayer(layer);
+    panel.setLayerManager(&mgr);
+
+    InspectPaneGroup grp;
+    grp.paneId = 1;
+    grp.paneLabel = "Pane 1";
+    grp.layers.push_back({ "Gradient", layer.get() });
+    panel.inspectGroups(geo.x, geo.y, ds->crsWkt(), { grp });
+}
+

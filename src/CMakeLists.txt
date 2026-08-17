@@ -27,6 +27,7 @@ qt_add_executable(FlashViewer
     # I/O
     io/RasterDataset.hpp    io/RasterDataset.cpp
     io/DatasetFactory.hpp   io/DatasetFactory.cpp
+    io/PyramidBuilder.hpp   io/PyramidBuilder.cpp
     io/BinaryRasterParser.hpp io/BinaryRasterParser.cpp
     io/BandStackVrt.hpp     io/BandStackVrt.cpp
     io/GeolocArrays.hpp     io/GeolocArrays.cpp
@@ -60,6 +61,7 @@ qt_add_executable(FlashViewer
     gis/AttributeInspector.hpp     gis/AttributeInspector.cpp
     gis/GdalOpsDialog.hpp          gis/GdalOpsDialog.cpp
     gis/CrsUtil.hpp
+    gis/GeoTransform4326.hpp
     gis/CrsPickerDialog.hpp        gis/CrsPickerDialog.cpp
 
     # Raster Math
@@ -75,6 +77,7 @@ qt_add_executable(FlashViewer
     panels/RasterInfoPanel.hpp     panels/RasterInfoPanel.cpp
     panels/NoDataWidget.hpp         panels/NoDataWidget.cpp
     panels/GpuMonitorPanel.hpp      panels/GpuMonitorPanel.cpp
+    panels/NumericDumpPanel.hpp     panels/NumericDumpPanel.cpp
 
     # Plots
     plots/SpectralPlotPanel.hpp    plots/SpectralPlotPanel.cpp
@@ -91,6 +94,7 @@ qt_add_executable(FlashViewer
     util/Logger.hpp util/Logger.cpp
     util/ErrorReporter.hpp util/ErrorReporter.cpp
     util/PerfMetrics.hpp util/PerfMetrics.cpp
+    util/SystemMetrics.hpp util/SystemMetrics.cpp
 )
 
 # Phase 12 — performance instrumentation. The metrics + Performance HUD (FR-APP-14)
