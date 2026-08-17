@@ -1,5 +1,6 @@
 #include "gis/AttributeInspector.hpp"
 #include "gis/PixelSampler.hpp"
+#include "gis/CrsUtil.hpp"
 #include "core/LayerManager.hpp"
 #include "core/RasterLayer.hpp"
 #include "core/Layer.hpp"
@@ -79,8 +80,8 @@ void AttributeInspector::changeEvent(QEvent* e) {
 
 void AttributeInspector::inspectGroups(double geo_x, double geo_y, const std::string& geoWkt,
                                        const QVector<InspectPaneGroup>& groups) {
-    m_coord_label->setText(QString("X: %1  Y: %2")
-        .arg(geo_x, 0, 'f', 6).arg(geo_y, 0, 'f', 6));
+    auto fmt = fvFormatCoordinates(geo_x, geo_y, geoWkt);
+    m_coord_label->setText(fmt.multi_line);
 
     clearGroups();
 
@@ -154,7 +155,7 @@ void AttributeInspector::inspectGroups(double geo_x, double geo_y, const std::st
     }
 
     if (shown == 0)
-        m_coord_label->setText(tr("No data at this location"));
+        m_coord_label->setText(fmt.multi_line + "\n(" + tr("No data at this location") + ")");
 }
 
 void AttributeInspector::removePaneGroup(uint64_t paneId) {

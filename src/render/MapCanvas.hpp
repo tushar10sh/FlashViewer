@@ -102,6 +102,7 @@ public:
     // This pane's Project CRS (WKT; empty = geographic/identity). Every raster layer in
     // the pane is rendered reprojected into it (FR-CRS-1); the basemap follows it too.
     std::string projectCrsWkt() const { return m_project_wkt; }
+    std::shared_ptr<class CrsTransformer> wgs84Transformer() const;
     // THE single choke point for changing the Project CRS. Validates the WKT, reprojects
     // the camera so the view stays put (FR-CRS-2), bumps the tile-cache epoch and purges
     // stale tiles, updates the basemap, and emits projectCrsChanged(). userInitiated=true

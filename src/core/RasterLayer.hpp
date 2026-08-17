@@ -25,6 +25,15 @@ public:
     // GDALDataset (and the mutex a worker may be blocked on) out from under a worker thread.
     // Anything that reads and returns on the calling thread should use dataset().
     std::shared_ptr<RasterDataset> datasetPtr() const { return m_ds; }
+
+    /// Shared GeoTransform4326 for coordinate conversions between pixel, projection, and EPSG:4326
+    std::shared_ptr<class GeoTransform4326> geoTransform4326() const {
+        return m_ds ? m_ds->geoTransform4326() : nullptr;
+    }
+    std::shared_ptr<class CrsTransformer> wgs84Transformer() const {
+        return m_ds ? m_ds->wgs84Transformer() : nullptr;
+    }
+
     const BandMapping&   bandMapping() const { return m_bands; }
     // The ONLY way to re-point a display channel at another band. It re-derives the 1/99
     // stretch of every channel whose band actually moved, so the image and the histogram

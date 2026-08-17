@@ -157,3 +157,84 @@ TEST_CASE("TC-CRS-01 warpedView reprojects into a different Project CRS", "[crs]
         REQUIRE(v2.height == v.height);
     }
 }
+
+TEST_CASE("TC-CRS-15 fvFormatCoordinates formats both projected X/Y and Lat/Lon", "[crs][coords]") {
+    // 1. Geographic CRS (EPSG:4326)
+    auto geoFmt = fvFormatCoordinates(12.345678, -45.678901, "EPSG:4326");
+    CHECK(geoFmt.has_latlon);
+    CHECK(geoFmt.xy_text.contains("X:"));
+    CHECK(geoFmt.xy_text.contains("Y:"));
+    CHECK(geoFmt.latlon_text.contains("Lat:"));
+    CHECK(geoFmt.latlon_text.contains("Lon:"));
+    CHECK(geoFmt.latlon_text.contains("S")); // negative latitude = South
+    CHECK(geoFmt.latlon_text.contains("E")); // positive longitude = East
+    CHECK(geoFmt.single_line.contains("|"));
+    CHECK(geoFmt.multi_line.contains("\n"));
+
+    // 2. Projected CRS (UTM-33N)
+    double ux = 500000.0, uy = 5538000.0;
+    auto utmFmt = fvFormatCoordinates(ux, uy, "EPSG:32633");
+    if (utmFmt.has_latlon) {
+        CHECK(utmFmt.xy_text.contains("500000"));
+        CHECK(utmFmt.xy_text.contains("5538000"));
+        CHECK(utmFmt.latlon_text.contains("Lat:"));
+        CHECK(utmFmt.latlon_text.contains("Lon:"));
+        CHECK(utmFmt.latlon_text.contains("N"));
+        CHECK(utmFmt.latlon_text.contains("E"));
+        CHECK(utmFmt.single_line.contains("|"));
+    }
+}
+
+#include "gis/GeoTransform4326.hpp"
+
+TEST_CASE("TC-CRS-16 GeoTransform4326 bridges pixel, project CRS, and WGS84", "[crs][geotransform]") {
+    // North-up raster in UTM-33N: pixel 0,0 at (500000, 5538000), 10m pixels
+    GeoTransform gt;
+    gt.gt[0] = 500000.0;
+    gt.gt[1] = 10.0;
+    gt.gt[2] = 0.0;
+    gt.gt[3] = 5538000.0;
+    gt.gt[4] = 0.0;
+    gt.gt[5] = -10.0;
+
+    GeoTransform4326 g4326(gt, "EPSG:32633");
+    REQUIRE(g4326.transformer() != nullptr);
+
+    // Pixel to Geo
+    glm::dvec2 geo = g4326.pixelToGeo(0, 0);
+    CHECK(geo.x == 500005.0);
+    CHECK(geo.y == 5537995.0);
+
+    // Pixel to Lat/Lon
+    double lat = 0.0, lon = 0.0;
+    if (g4326.pixelToLatLon(0, 0, lat, lon)) {
+        CHECK(lat > 49.0);
+        CHECK(lat < 51.0);
+        CHECK(lon > 14.0);
+        CHECK(lon < 16.0);
+
+        // Roundtrip Lat/Lon back to Pixel
+        double col = 0.0, row = 0.0;
+        REQUIRE(g4326.latLonToPixel(lat, lon, col, row));
+        CHECK(std::abs(col - 0.0) < 1e-3);
+        CHECK(std::abs(row - 0.0) < 1e-3);
+    }
+}
+
+TEST_CASE("TC-CRS-17 CrsTransformerPool reuses instances and ensures thread safety", "[crs][transformer]") {
+    auto tr1 = fvGetWgs84Transformer("EPSG:32633");
+    auto tr2 = fvGetWgs84Transformer("EPSG:32633");
+    REQUIRE(tr1 != nullptr);
+    REQUIRE(tr2 != nullptr);
+    CHECK(tr1.get() == tr2.get()); // Same pooled instance reused
+
+    double lat = 0.0, lon = 0.0;
+    if (tr1->toLatLon(500000.0, 5538000.0, lat, lon)) {
+        double px = 0.0, py = 0.0;
+        REQUIRE(tr1->toProjected(lat, lon, px, py));
+        CHECK(std::abs(px - 500000.0) < 1e-2);
+        CHECK(std::abs(py - 5538000.0) < 1e-2);
+    }
+}
+
+

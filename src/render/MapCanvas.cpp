@@ -702,6 +702,10 @@ void MapCanvas::setProjectCrsWkt(const std::string& wkt, bool userInitiated) {
     update();
 }
 
+std::shared_ptr<CrsTransformer> MapCanvas::wgs84Transformer() const {
+    return fvGetWgs84Transformer(m_project_wkt);
+}
+
 void MapCanvas::clearProjectCrsOverride() {
     m_project_crs_user_set = false;
     refreshDerivedProjectCrs();   // re-apply the bottom-raster default (no-op if unchanged)
