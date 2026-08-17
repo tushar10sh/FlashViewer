@@ -51,3 +51,8 @@ docs/SRS_REVISE_PLAN.md
 
 # Sample Data
 sample_data/
+
+# Archives & Packages
+*.tar.gz
+*.zip
+*.dmg

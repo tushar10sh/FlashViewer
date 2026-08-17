@@ -1,0 +1,112 @@
+# ===========================================================================
+# Stage 1: Build Environment (Can be saved for offline airgapped builds)
+# ===========================================================================
+FROM --platform=linux/amd64 rockylinux:9 AS builder
+
+# 1. Enable EPEL and CodeReady Builder (CRB) repositories for Rocky 9
+RUN dnf install -y epel-release dnf-plugins-core \
+    && dnf config-manager --set-enabled crb \
+    && dnf update -y
+
+# 2. Install build toolchain, Qt6, GDAL, and dependencies
+RUN dnf install -y \
+    gcc-c++ \
+    cmake \
+    ninja-build \
+    pkgconfig \
+    patchelf \
+    python3 \
+    git \
+    tar \
+    gzip \
+    qt6-qtbase-devel \
+    qt6-qtcharts-devel \
+    qt6-qtsvg-devel \
+    gdal-devel \
+    gdal \
+    proj-data \
+    spdlog-devel \
+    nlohmann-json-devel \
+    glm-devel \
+    catch2-devel \
+    mesa-libGL-devel \
+    libxkbcommon-devel \
+    libxkbcommon-x11 \
+    libxcb \
+    xcb-util \
+    xcb-util-cursor \
+    xcb-util-image \
+    xcb-util-keysyms \
+    xcb-util-renderutil \
+    xcb-util-wm \
+    && dnf clean all
+
+# 3. Build and install muParser from source
+RUN git clone --depth 1 --branch v2.3.4 https://github.com/beltoforion/muparser.git /tmp/muparser \
+    && cmake -B /tmp/muparser/build -S /tmp/muparser -G Ninja -DENABLE_SAMPLES=OFF -DENABLE_OPENMP=OFF -DCMAKE_BUILD_TYPE=Release \
+    && cmake --build /tmp/muparser/build \
+    && cmake --install /tmp/muparser/build \
+    && rm -rf /tmp/muparser
+
+WORKDIR /workspace
+
+# ===========================================================================
+# Stage 2: Build Application & Assemble Standalone Bundle
+# ===========================================================================
+FROM builder AS packager
+
+COPY . /workspace
+
+# Configure & Build Release Binary
+RUN cmake -B build/rocky9-amd64 -G Ninja \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DBUILD_TESTING=OFF \
+    -DCMAKE_PREFIX_PATH="/usr/local;/usr"
+
+RUN cmake --build build/rocky9-amd64 --parallel
+
+# Assemble Self-Contained Standalone Bundle
+RUN mkdir -p /dist/FlashViewer-bundle/bin \
+             /dist/FlashViewer-bundle/lib \
+             /dist/FlashViewer-bundle/plugins/platforms \
+             /dist/FlashViewer-bundle/plugins/xcbglintegrations \
+             /dist/FlashViewer-bundle/share/proj \
+             /dist/FlashViewer-bundle/share/gdal
+
+# Copy binary
+RUN cp build/rocky9-amd64/FlashViewer /dist/FlashViewer-bundle/bin/
+
+# Copy Qt6 plugins
+RUN cp /usr/lib64/qt6/plugins/platforms/libqxcb.so /dist/FlashViewer-bundle/plugins/platforms/ 2>/dev/null || true \
+ && cp /usr/lib64/qt6/plugins/platforms/libqoffscreen.so /dist/FlashViewer-bundle/plugins/platforms/ 2>/dev/null || true \
+ && cp /usr/lib64/qt6/plugins/xcbglintegrations/*.so /dist/FlashViewer-bundle/plugins/xcbglintegrations/ 2>/dev/null || true
+
+# Copy PROJ & GDAL geodetic data tables for offline operations
+RUN cp -r /usr/share/proj/* /dist/FlashViewer-bundle/share/proj/ 2>/dev/null || true
+RUN cp -r /usr/share/gdal/* /dist/FlashViewer-bundle/share/gdal/ 2>/dev/null || true
+
+# Copy all dependent shared libraries (.so) into bundle/lib
+RUN python3 /workspace/scripts/package_linux.py /dist/FlashViewer-bundle
+
+# Set relative RPATH on binary and plugins ($ORIGIN)
+RUN patchelf --set-rpath '$ORIGIN/../lib' /dist/FlashViewer-bundle/bin/FlashViewer \
+ && for f in /dist/FlashViewer-bundle/plugins/platforms/*.so /dist/FlashViewer-bundle/plugins/xcbglintegrations/*.so; do \
+      [ -f "$f" ] && patchelf --set-rpath '$ORIGIN/../../lib' "$f" || true; \
+    done
+
+# Create Standalone Launcher Script
+RUN echo '#!/usr/bin/env bash' > /dist/FlashViewer-bundle/FlashViewer.sh \
+ && echo 'HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"' >> /dist/FlashViewer-bundle/FlashViewer.sh \
+ && echo 'export LD_LIBRARY_PATH="$HERE/lib:$LD_LIBRARY_PATH"' >> /dist/FlashViewer-bundle/FlashViewer.sh \
+ && echo 'export QT_PLUGIN_PATH="$HERE/plugins"' >> /dist/FlashViewer-bundle/FlashViewer.sh \
+ && echo 'export QT_QPA_PLATFORM_PLUGIN_PATH="$HERE/plugins/platforms"' >> /dist/FlashViewer-bundle/FlashViewer.sh \
+ && echo 'export PROJ_DATA="$HERE/share/proj"' >> /dist/FlashViewer-bundle/FlashViewer.sh \
+ && echo 'export PROJ_LIB="$HERE/share/proj"' >> /dist/FlashViewer-bundle/FlashViewer.sh \
+ && echo 'export GDAL_DATA="$HERE/share/gdal"' >> /dist/FlashViewer-bundle/FlashViewer.sh \
+ && echo 'exec "$HERE/bin/FlashViewer" "$@"' >> /dist/FlashViewer-bundle/FlashViewer.sh \
+ && chmod +x /dist/FlashViewer-bundle/FlashViewer.sh
+
+# Archive to Tarball
+WORKDIR /dist
+RUN tar -czvf FlashViewer-rocky9-amd64-standalone.tar.gz FlashViewer-bundle
+

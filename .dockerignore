@@ -1,0 +1,5 @@
+build/
+.git/
+*.tar.gz
+*.dmg
+*.zip
