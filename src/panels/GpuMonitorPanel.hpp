@@ -1,16 +1,38 @@
 #pragma once
 #include <QWidget>
 #include <QString>
+#include <QComboBox>
+#include <QCheckBox>
+#include <QHBoxLayout>
+#include <QVBoxLayout>
 #include <cstddef>
 #include <deque>
 
-// Live GPU-usage visualizer (FR-APP-11). Shows the estimated resident VRAM —
-// summed from every pane's TileCache (GL_R32F bytes) — as a rolling sparkline,
-// plus a numeric readout (MB / tiles / panes) and the static GPU identity.
-//
-// A pure view widget: it performs no GL queries itself. MainWindow polls the panes
-// on a timer and pushes samples via addSample(). The drawing follows the codebase's
-// hand-rolled QPainter pattern (cf. panels/HistogramPanel HistogramView).
+enum class ResourceViewMode {
+    Dashboard = 0,   // Gauges on top, rolling sparklines below
+    GaugesOnly = 1,  // Compact progress gauges only
+    GraphsOnly = 2   // Historical sparklines only
+};
+
+struct ResourceSample {
+    double      cpu_percent{0.0};
+    double      ram_percent{0.0};
+    std::size_t ram_proc_bytes{0};
+    std::size_t ram_sys_used{0};
+    std::size_t ram_sys_total{0};
+    std::size_t vram_bytes{0};
+    std::size_t vram_budget_bytes{0};
+    double      vram_percent{0.0};
+    int         tiles{0};
+    int         panes{0};
+    double      gpu_percent{0.0};
+};
+
+class ResourceCanvas;
+
+// Live System & GPU Resource Monitor Panel.
+// Shows configurable CPU, RAM, VRAM, and GPU utilization with compact gauges,
+// rolling time-series sparklines, and hardware identity readouts.
 class GpuMonitorPanel : public QWidget {
     Q_OBJECT
 public:
@@ -19,22 +41,42 @@ public:
     void setGpuIdentity(const QString& renderer, const QString& vendor,
                         const QString& version);
 
-    // bytes = estimated resident VRAM; tiles = resident tile count; panes = # panes.
+    // Add a full resource sample
+    void addResourceSample(const ResourceSample& sample);
+
+    // Backwards-compatible overload
     void addSample(std::size_t bytes, int tiles, int panes);
 
-    QSize sizeHint() const override { return {260, 150}; }
-    QSize minimumSizeHint() const override { return {160, 90}; }
+    // View configurations
+    void setViewMode(ResourceViewMode mode);
+    ResourceViewMode viewMode() const { return m_view_mode; }
 
-protected:
-    void paintEvent(QPaintEvent*) override;
+    void setCpuVisible(bool visible);
+    void setRamVisible(bool visible);
+    void setVramVisible(bool visible);
+    void setGpuVisible(bool visible);
+
+    bool isCpuVisible() const { return m_show_cpu; }
+    bool isRamVisible() const { return m_show_ram; }
+    bool isVramVisible() const { return m_show_vram; }
+    bool isGpuVisible() const { return m_show_gpu; }
+
+    QSize sizeHint() const override { return {280, 260}; }
+    QSize minimumSizeHint() const override { return {180, 120}; }
 
 private:
-    static constexpr int kMaxSamples = 180;
+    void setupUi();
 
-    QString            m_identity;
-    std::deque<double> m_mb;          // rolling samples in MiB
-    double             m_peak_mb{1.0};
-    std::size_t        m_last_bytes{0};
-    int                m_last_tiles{0};
-    int                m_last_panes{0};
+    ResourceViewMode m_view_mode{ResourceViewMode::Dashboard};
+    bool m_show_cpu{true};
+    bool m_show_ram{true};
+    bool m_show_vram{true};
+    bool m_show_gpu{true};
+
+    ResourceCanvas* m_canvas{nullptr};
+    QComboBox*      m_mode_combo{nullptr};
+    QCheckBox*      m_chk_cpu{nullptr};
+    QCheckBox*      m_chk_ram{nullptr};
+    QCheckBox*      m_chk_vram{nullptr};
+    QCheckBox*      m_chk_gpu{nullptr};
 };
