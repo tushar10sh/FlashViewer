@@ -227,6 +227,10 @@ private:
     bool                     m_ghost_active{false};
     double                   m_ghost_x{0.0};
     double                   m_ghost_y{0.0};
+    // Synchronous pixel highlight state (drawn inside paintGL without widget lag)
+    bool                     m_highlight_active{false};
+    std::array<QPointF, 4>   m_highlight_corners{};
+    void                     drawPixelHighlight();
 
     // Repaint timer: fires while tiles are still loading (FR-RND-7).
     // m_repaint_clock measures elapsed time since the current load burst began;

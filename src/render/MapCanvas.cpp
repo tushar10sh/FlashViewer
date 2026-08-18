@@ -535,6 +535,11 @@ void MapCanvas::paintGL() {
         }
     }
 
+    // Pixel highlight overlay: rendered synchronously with exact camera matrix in this pass
+    if (m_highlight_active) {
+        drawPixelHighlight();
+    }
+
     // Frame timer (NFR-PERF-1): record this frame's render cost, then draw the HUD
     // (FR-APP-14) last so its own paint isn't included in the measured frame time.
     const double frame_ms = std::chrono::duration<double, std::milli>(
@@ -917,11 +922,14 @@ void MapCanvas::setInspectMode(bool on) {
 }
 
 void MapCanvas::clearInspectHighlight() {
+    if (m_highlight_active) {
+        m_highlight_active = false;
+        update();
+    }
     if (m_highlight_overlay) m_highlight_overlay->clearHighlight();
 }
 
 void MapCanvas::updateHighlightForGeo(double geo_x, double geo_y) {
-    if (!m_highlight_overlay) return;
     // Representative raster: the active-in-pane layer if it is a raster, else the first raster
     // this pane shows (mirrors paneIsGeographic / the inspector's representative-layer pick, so
     // a synced sibling snaps the click to its own dataset — Phase 6.8.3).
@@ -931,35 +939,25 @@ void MapCanvas::updateHighlightForGeo(double geo_x, double geo_y) {
             if (l && l->type() == LayerType::Raster) { rep = l; break; }
     }
     if (!rep || rep->type() != LayerType::Raster) {
-        m_highlight_overlay->clearHighlight();
+        clearInspectHighlight();
         return;
     }
     auto* rl = static_cast<RasterLayer*>(rep.get());
     auto* ds = rl->dataset();
-    if (!ds) { m_highlight_overlay->clearHighlight(); return; }
+    if (!ds) { clearInspectHighlight(); return; }
 
-    // Snap the highlight to the WARPED DISPLAY CELL under the cursor (ESRI/ImageLinker style):
-    // the visible pixel-blocks are cells of the warped VRT grid, so outlining that cell frames
-    // exactly what the user sees — the source-pixel polygon (QGIS-style) floated because
-    // FlashViewer warps to a fixed-resolution grid distinct from the source pixels. The warp
-    // uses nearest-neighbour for categorical data (fvDefaultResampling) so displayed values are
-    // unaltered, and the inspected VALUE is still read from the source pixel (FR-CRS-4). The
-    // warped grid is north-up in the Project CRS, so the cell is an axis-aligned rectangle; with
-    // no reprojection the view is sameAsSource (gt == source), degenerating to the source pixel.
     const std::string resamp =
         fvDefaultResampling(static_cast<GDALDataType>(ds->bandDataType(1)),
                             ds->bandHasColorTable(1));
     RasterDataset::WarpedView wv = ds->warpedView(m_project_wkt, resamp);
-    if (wv.failed) { m_highlight_overlay->clearHighlight(); return; }
+    if (wv.failed) { clearInspectHighlight(); return; }
 
     // The click is already in the pane Project CRS → locate the warped cell directly.
-    // geoToPixel is pixel-CENTRE based (integer == centre), so the containing cell index is
-    // round(), not floor().
     auto px = wv.gt.geoToPixel(geo_x, geo_y);
-    int col = static_cast<int>(std::round(px.x));
-    int row = static_cast<int>(std::round(px.y));
+    int col = static_cast<int>(std::floor(px.x + 0.5));
+    int row = static_cast<int>(std::floor(px.y + 0.5));
     if (col < 0 || row < 0 || col >= wv.width || row >= wv.height) {
-        m_highlight_overlay->clearHighlight();
+        clearInspectHighlight();
         return;
     }
     // Cell corners are the raw affine EDGES (pixelToGeo would return cell centres, offsetting the
@@ -973,7 +971,60 @@ void MapCanvas::updateHighlightForGeo(double geo_x, double geo_y) {
                                     cornerGeo(col + 1, row),      // TR
                                     cornerGeo(col + 1, row + 1),  // BR
                                     cornerGeo(col, row + 1) };    // BL
-    m_highlight_overlay->setHighlight(corners, &m_camera);
+
+    m_highlight_corners = corners;
+    m_highlight_active = true;
+    update();
+}
+
+void MapCanvas::drawPixelHighlight() {
+    if (!m_highlight_active) return;
+
+    QPolygonF poly;
+    poly.reserve(4);
+    double minx = 0, miny = 0, maxx = 0, maxy = 0;
+    double sumX = 0.0, sumY = 0.0;
+    for (int i = 0; i < 4; ++i) {
+        auto s = m_camera.geoToScreen(m_highlight_corners[i].x(), m_highlight_corners[i].y());
+        if (i == 0) { minx = maxx = s.x; miny = maxy = s.y; }
+        else {
+            minx = std::min(minx, s.x); maxx = std::max(maxx, s.x);
+            miny = std::min(miny, s.y); maxy = std::max(maxy, s.y);
+        }
+        sumX += s.x;
+        sumY += s.y;
+        poly << QPointF(s.x, s.y);
+    }
+
+    const double cx = sumX / 4.0;
+    const double cy = sumY / 4.0;
+
+    QPainter p(this);
+    p.setRenderHint(QPainter::Antialiasing, true);
+
+    const double boxW = maxx - minx;
+    const double boxH = maxy - miny;
+
+    // Outline cell boundaries when pixel is large enough on screen
+    if (boxW >= 3.0 && boxH >= 3.0) {
+        p.setPen(QPen(QColor(230, 20, 20, 230), 2.0));
+        p.setBrush(QColor(255, 0, 0, 35));
+        p.drawPolygon(poly);
+    }
+
+    // Contrast halo / shadow (white outer stroke)
+    p.setPen(QPen(QColor(255, 255, 255, 220), 3.0, Qt::SolidLine, Qt::RoundCap));
+    p.drawLine(QPointF(cx - 6.0, cy), QPointF(cx + 6.0, cy));
+    p.drawLine(QPointF(cx, cy - 6.0), QPointF(cx, cy + 6.0));
+    p.setBrush(Qt::NoBrush);
+    p.drawEllipse(QPointF(cx, cy), 3.5, 3.5);
+
+    // Center target marker (red crosshair + dot)
+    p.setPen(QPen(QColor(220, 20, 20, 255), 1.5, Qt::SolidLine, Qt::RoundCap));
+    p.drawLine(QPointF(cx - 6.0, cy), QPointF(cx + 6.0, cy));
+    p.drawLine(QPointF(cx, cy - 6.0), QPointF(cx, cy + 6.0));
+    p.setBrush(QColor(220, 20, 20, 255));
+    p.drawEllipse(QPointF(cx, cy), 2.5, 2.5);
 }
 
 void MapCanvas::mousePressEvent(QMouseEvent* event) {
