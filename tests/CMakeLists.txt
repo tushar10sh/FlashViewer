@@ -73,6 +73,7 @@ add_executable(flashviewer_tests
 
     # Resource and system metrics
     test_system_metrics.cpp
+    test_snr_mtf_filter.cpp
 
     # Shared test harnesses / fixtures
     fixtures/FixtureFactory.cpp
@@ -92,6 +93,8 @@ add_executable(flashviewer_tests
     "${CMAKE_SOURCE_DIR}/src/panels/HistogramPanel.cpp"
     "${CMAKE_SOURCE_DIR}/src/panels/GpuMonitorPanel.cpp"
     "${CMAKE_SOURCE_DIR}/src/panels/VectorLayerPanel.cpp"
+    "${CMAKE_SOURCE_DIR}/src/panels/SnrToolPanel.cpp"
+    "${CMAKE_SOURCE_DIR}/src/panels/MtfToolPanel.cpp"
     # LayerPanel + its icon button: TC-LYR-18/19 drive the real panel widget, because the
     # selection bookkeeping they pin lives in rebuildList, not in LayerGrouping's free
     # functions.

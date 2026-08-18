@@ -4,10 +4,13 @@
 #include "app/AboutLicensesDialog.hpp"
 #include "app/CoordAssignDialog.hpp"
 #include "app/NewPaneDialog.hpp"
+#include "app/LayerSettingsDialog.hpp"
 #include "app/Settings.hpp"
 #include "plots/SpectralPlotPanel.hpp"
 #include "plots/ScanPixProfilePanel.hpp"
 #include "plots/PlotWindowChrome.hpp"   // fvApplyPlotWindowFlags — what kind of window a plot is
+#include "panels/SnrToolPanel.hpp"
+#include "panels/MtfToolPanel.hpp"
 #include "render/MapCanvas.hpp"
 #include "render/PaneLayout.hpp"
 #include "core/Layer.hpp"             // kDefaultPaneId
@@ -1058,6 +1061,130 @@ void MainWindow::setupMenuBar() {
         applyToolMode(on ? MapCanvas::ToolMode::MeasureArea : MapCanvas::ToolMode::Navigate);
     });
 
+    toolsMenu->addSeparator();
+
+    m_act_snr = toolsMenu->addAction(tr("S&NR Tool (Ctrl+Shift+S)"));
+    m_act_snr->setCheckable(true);
+    m_act_snr->setShortcut(QKeySequence("Ctrl+Shift+S"));
+    m_act_snr->setToolTip(tr("Signal-to-Noise Ratio (SNR) region analysis tool"));
+    connect(m_act_snr, &QAction::triggered, this, [this](bool on) {
+        if (on && m_snr_panel) showPlotWindow(m_snr_panel, QStringLiteral("snr"));
+        applyToolMode(on ? MapCanvas::ToolMode::Snr : MapCanvas::ToolMode::Navigate);
+    });
+
+    m_act_mtf = toolsMenu->addAction(tr("M&TF Tool (Ctrl+Shift+F)"));
+    m_act_mtf->setCheckable(true);
+    m_act_mtf->setShortcut(QKeySequence("Ctrl+Shift+F"));
+    m_act_mtf->setToolTip(tr("Modulation Transfer Function (MTF) region analysis tool"));
+    connect(m_act_mtf, &QAction::triggered, this, [this](bool on) {
+        if (on && m_mtf_panel) showPlotWindow(m_mtf_panel, QStringLiteral("mtf"));
+        applyToolMode(on ? MapCanvas::ToolMode::Mtf : MapCanvas::ToolMode::Navigate);
+    });
+
+    // ---- Layer ----
+    auto* layerMenu = menuBar()->addMenu(tr("&Layer"));
+
+    m_act_layer_settings = layerMenu->addAction(tr("&Layer Settings… (Ctrl+L)"));
+    m_act_layer_settings->setShortcut(QKeySequence("Ctrl+L"));
+    m_act_layer_settings->setToolTip(tr("Open comprehensive settings dialog for active raster layer (Ctrl+L)"));
+    connect(m_act_layer_settings, &QAction::triggered, this, [this] {
+        openLayerSettings();
+    });
+
+    layerMenu->addSeparator();
+
+    auto* actLayerVis = layerMenu->addAction(tr("Toggle &Visibility"));
+    connect(actLayerVis, &QAction::triggered, this, [this] {
+        if (m_canvas) {
+            if (auto layer = m_canvas->activeLayerInPane()) {
+                layer->setVisible(!layer->visible());
+                m_canvas->update();
+                if (m_layer_panel) m_layer_panel->refreshPanes();
+            }
+        }
+    });
+
+    auto* actLayerFit = layerMenu->addAction(tr("&Fit Active Layer to View"));
+    actLayerFit->setShortcut(QKeySequence(Qt::Key_F));
+    connect(actLayerFit, &QAction::triggered, this, [this] {
+        if (m_canvas) {
+            if (auto layerPtr = m_canvas->activeLayerInPane(); layerPtr && layerPtr->type() == LayerType::Raster) {
+                auto* rl = static_cast<RasterLayer*>(layerPtr.get());
+                Extent ext = rl->extent();
+                if (ext.isValid()) {
+                    Camera cam = m_canvas->camera();
+                    cam.fitToExtent(ext);
+                    m_canvas->setCamera(cam);
+                    m_canvas->update();
+                }
+            }
+        }
+    });
+
+    layerMenu->addSeparator();
+
+    auto* layerFilterSub = layerMenu->addMenu(tr("Display &Filter (Active Layer)"));
+    m_layer_filter_group = new QActionGroup(this);
+    m_layer_filter_group->setExclusive(true);
+
+    m_act_lfilter_none = layerFilterSub->addAction(tr("&None"));
+    m_act_lfilter_none->setCheckable(true);
+    m_layer_filter_group->addAction(m_act_lfilter_none);
+
+    m_act_lfilter_check = layerFilterSub->addAction(tr("&Checkerboard Pattern"));
+    m_act_lfilter_check->setCheckable(true);
+    m_layer_filter_group->addAction(m_act_lfilter_check);
+
+    m_act_lfilter_vswipe = layerFilterSub->addAction(tr("&Vertical Swipe"));
+    m_act_lfilter_vswipe->setCheckable(true);
+    m_layer_filter_group->addAction(m_act_lfilter_vswipe);
+
+    m_act_lfilter_hswipe = layerFilterSub->addAction(tr("&Horizontal Swipe"));
+    m_act_lfilter_hswipe->setCheckable(true);
+    m_layer_filter_group->addAction(m_act_lfilter_hswipe);
+
+    connect(m_act_lfilter_none, &QAction::triggered, this, [this] {
+        if (m_canvas) {
+            if (auto l = m_canvas->activeLayerInPane(); l && l->type() == LayerType::Raster) {
+                static_cast<RasterLayer*>(l.get())->setDisplayFilterMode(RasterLayer::DisplayFilterMode::None);
+                m_canvas->update();
+            }
+        }
+        updateLayerMenuFilterChecks();
+    });
+
+    connect(m_act_lfilter_check, &QAction::triggered, this, [this] {
+        if (m_canvas) {
+            if (auto l = m_canvas->activeLayerInPane(); l && l->type() == LayerType::Raster) {
+                static_cast<RasterLayer*>(l.get())->setDisplayFilterMode(RasterLayer::DisplayFilterMode::Checkerboard);
+                m_canvas->update();
+            }
+        }
+        updateLayerMenuFilterChecks();
+    });
+
+    connect(m_act_lfilter_vswipe, &QAction::triggered, this, [this] {
+        if (m_canvas) {
+            if (auto l = m_canvas->activeLayerInPane(); l && l->type() == LayerType::Raster) {
+                static_cast<RasterLayer*>(l.get())->setDisplayFilterMode(RasterLayer::DisplayFilterMode::VerticalSwipe);
+                m_canvas->update();
+            }
+        }
+        updateLayerMenuFilterChecks();
+    });
+
+    connect(m_act_lfilter_hswipe, &QAction::triggered, this, [this] {
+        if (m_canvas) {
+            if (auto l = m_canvas->activeLayerInPane(); l && l->type() == LayerType::Raster) {
+                static_cast<RasterLayer*>(l.get())->setDisplayFilterMode(RasterLayer::DisplayFilterMode::HorizontalSwipe);
+                m_canvas->update();
+            }
+        }
+        updateLayerMenuFilterChecks();
+    });
+
+    updateLayerMenuFilterChecks();
+
     // ---- Settings ----
     auto* settingsMenu = menuBar()->addMenu(tr("&Settings"));
     auto* actPrefs = settingsMenu->addAction(tr("&Preferences / Settings…"));
@@ -1198,8 +1325,6 @@ void MainWindow::setupToolBar() {
 
     toolbar->addSeparator();
     if (m_act_inspect)      toolbar->addAction(m_act_inspect);
-    if (m_act_measure_dist) toolbar->addAction(m_act_measure_dist);
-    if (m_act_measure_area) toolbar->addAction(m_act_measure_area);
 
     toolbar->addSeparator();
     auto* actShot = new QAction(tr("Screenshot"), this);
@@ -1494,6 +1619,13 @@ void MainWindow::setupDocks() {
                 m_canvas->setCamera(cam);
                 m_canvas->update();
             });
+    connect(m_layer_panel, &LayerPanel::layerSettingsRequested,
+            this, [this](int idx) {
+                auto layerPtr = m_layer_mgr->layerAt(idx);
+                if (layerPtr && layerPtr->type() == LayerType::Raster) {
+                    openLayerSettings(static_cast<RasterLayer*>(layerPtr.get()));
+                }
+            });
     connect(m_layer_panel, &LayerPanel::layerDatasetChanged,
             this, [this](int idx) {
                 auto layer = m_layer_mgr->layerAt(idx);
@@ -1596,6 +1728,34 @@ void MainWindow::setupDocks() {
     m_profile_panel->resize(760, 520);
     m_profile_panel->hide();
     m_profile_panel->installEventFilter(this);
+
+    m_snr_panel = new SnrToolPanel(this);
+    fvApplyPlotWindowFlags(m_snr_panel);
+    m_snr_panel->setWindowTitle(tr("SNR Analysis Tool"));
+    m_snr_panel->resize(620, 360);
+    m_snr_panel->hide();
+    m_snr_panel->installEventFilter(this);
+    connect(m_snr_panel, &SnrToolPanel::windowSizeChanged, this, [this](int sz) {
+        for (int i = 0; i < m_pane_layout->paneCount(); ++i) {
+            if (auto* c = m_pane_layout->paneCanvas(i)) {
+                c->setSnrMtfWindowSize(sz);
+            }
+        }
+    });
+
+    m_mtf_panel = new MtfToolPanel(this);
+    fvApplyPlotWindowFlags(m_mtf_panel);
+    m_mtf_panel->setWindowTitle(tr("MTF Analysis Tool"));
+    m_mtf_panel->resize(640, 500);
+    m_mtf_panel->hide();
+    m_mtf_panel->installEventFilter(this);
+    connect(m_mtf_panel, &MtfToolPanel::windowSizeChanged, this, [this](int sz) {
+        for (int i = 0; i < m_pane_layout->paneCount(); ++i) {
+            if (auto* c = m_pane_layout->paneCanvas(i)) {
+                c->setSnrMtfWindowSize(sz);
+            }
+        }
+    });
 
     // Track every dock with its fresh-build placement so View → Panels can re-open a
     // closed panel at its original location (FR-APP-9). reserve() first: buildPanelsMenu
@@ -1881,12 +2041,29 @@ void MainWindow::wireCanvasSignals(MapCanvas* canvas) {
         inspectFromPane(canvas, x, y, /*allLayers=*/true);
     });
 
-    // Tool mode changes (Inspect, Measure Distance, Measure Area)
+    // Tool mode changes (Inspect, Measure Distance, Measure Area, SNR, MTF)
     connect(canvas, &MapCanvas::toolModeChanged, this, [this](MapCanvas::ToolMode mode) {
         if (m_act_inspect)      m_act_inspect->setChecked(mode == MapCanvas::ToolMode::Inspect);
         if (m_act_measure_dist) m_act_measure_dist->setChecked(mode == MapCanvas::ToolMode::MeasureDistance);
         if (m_act_measure_area) m_act_measure_area->setChecked(mode == MapCanvas::ToolMode::MeasureArea);
+        if (m_act_snr)          m_act_snr->setChecked(mode == MapCanvas::ToolMode::Snr);
+        if (m_act_mtf)          m_act_mtf->setChecked(mode == MapCanvas::ToolMode::Mtf);
     });
+
+    connect(canvas, &MapCanvas::snrRequested, this, [this, canvas](RasterLayer* layer, int col, int row, double gx, double gy) {
+        if (m_snr_panel) {
+            showPlotWindow(m_snr_panel, QStringLiteral("snr"));
+            m_snr_panel->calculateAndShow(layer, col, row, gx, gy, QString::fromStdString(canvas->projectCrsWkt()));
+        }
+    });
+
+    connect(canvas, &MapCanvas::mtfRequested, this, [this, canvas](RasterLayer* layer, int col, int row, double gx, double gy) {
+        if (m_mtf_panel) {
+            showPlotWindow(m_mtf_panel, QStringLiteral("mtf"));
+            m_mtf_panel->calculateAndShow(layer, col, row, gx, gy, QString::fromStdString(canvas->projectCrsWkt()));
+        }
+    });
+
     connect(canvas, &MapCanvas::measurementUpdated, this, [this](double /*dist*/, double /*area*/, const QString& summary) {
         if (!summary.isEmpty()) {
             statusBar()->showMessage(summary, 5000);
@@ -2107,18 +2284,34 @@ void MainWindow::applyToolMode(MapCanvas::ToolMode mode) {
     if (m_act_inspect)      m_act_inspect->setChecked(mode == MapCanvas::ToolMode::Inspect);
     if (m_act_measure_dist) m_act_measure_dist->setChecked(mode == MapCanvas::ToolMode::MeasureDistance);
     if (m_act_measure_area) m_act_measure_area->setChecked(mode == MapCanvas::ToolMode::MeasureArea);
+    if (m_act_snr)          m_act_snr->setChecked(mode == MapCanvas::ToolMode::Snr);
+    if (m_act_mtf)          m_act_mtf->setChecked(mode == MapCanvas::ToolMode::Mtf);
 
     for (int i = 0; i < m_pane_layout->paneCount(); ++i) {
         if (auto* c = m_pane_layout->paneCanvas(i)) {
             c->setToolMode(mode);
+            if (mode == MapCanvas::ToolMode::Snr && m_snr_panel) {
+                c->setSnrMtfWindowSize(m_snr_panel->windowSize());
+            } else if (mode == MapCanvas::ToolMode::Mtf && m_mtf_panel) {
+                c->setSnrMtfWindowSize(m_mtf_panel->windowSize());
+            }
             if (mode != MapCanvas::ToolMode::Inspect) {
                 c->clearInspectHighlight();
+            }
+            if (mode != MapCanvas::ToolMode::Snr && mode != MapCanvas::ToolMode::Mtf) {
+                c->clearSnrMtfRegion();
             }
         }
     }
     if (mode != MapCanvas::ToolMode::Inspect) {
         if (m_numeric_dump) m_numeric_dump->clear();
         if (m_attr_insp)    m_attr_insp->clear();
+    }
+    if (mode != MapCanvas::ToolMode::Snr && m_snr_panel && !m_snr_panel->isHidden()) {
+        m_snr_panel->hide();
+    }
+    if (mode != MapCanvas::ToolMode::Mtf && m_mtf_panel && !m_mtf_panel->isHidden()) {
+        m_mtf_panel->hide();
     }
 }
 
@@ -2595,6 +2788,7 @@ void MainWindow::onActiveLayerChanged(int index) {
     if (m_multi_select) rl = nullptr;
     refreshLayerProperties(rl);
     updatePaneLegends();
+    updateLayerMenuFilterChecks();
 
     // Phase 26: the Spectral Plot follows the activated layer — its stored plot if inspect
     // mode has sampled it (the whole merged plot when the layer belongs to one), else a blank
@@ -2676,6 +2870,15 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
                                                        watched == m_spectral_panel
                                                            ? m_spectral_panel->saveSplitState()
                                                            : m_profile_panel->saveSplitState());
+        }
+        return QMainWindow::eventFilter(watched, event);
+    }
+    if ((watched == m_snr_panel || watched == m_mtf_panel) &&
+        (event->type() == QEvent::Close || event->type() == QEvent::Hide)) {
+        if (watched == m_snr_panel && m_act_snr && m_act_snr->isChecked()) {
+            applyToolMode(MapCanvas::ToolMode::Navigate);
+        } else if (watched == m_mtf_panel && m_act_mtf && m_act_mtf->isChecked()) {
+            applyToolMode(MapCanvas::ToolMode::Navigate);
         }
         return QMainWindow::eventFilter(watched, event);
     }
@@ -3096,5 +3299,46 @@ void MainWindow::showSettingsDialog() {
         if (m_numeric_dump) m_numeric_dump->update();
     });
     dlg.exec();
+}
+
+void MainWindow::openLayerSettings(RasterLayer* layer) {
+    if (!layer) {
+        if (m_canvas) {
+            std::shared_ptr<Layer> active = m_canvas->activeLayerInPane();
+            if (active && active->type() == LayerType::Raster) {
+                layer = static_cast<RasterLayer*>(active.get());
+            }
+        }
+        if (!layer) {
+            for (int i = 0; i < m_layer_mgr->count(); ++i) {
+                if (auto l = m_layer_mgr->layerAt(i); l && l->type() == LayerType::Raster) {
+                    layer = static_cast<RasterLayer*>(l.get());
+                    break;
+                }
+            }
+        }
+    }
+    if (!layer) {
+        QMessageBox::information(this, tr("Layer Settings"), tr("No active raster layer available to configure."));
+        return;
+    }
+
+    LayerSettingsDialog dlg(layer, m_layer_mgr, m_canvas, this);
+    dlg.exec();
+    updateLayerMenuFilterChecks();
+}
+
+void MainWindow::updateLayerMenuFilterChecks() {
+    auto l = m_canvas ? m_canvas->activeLayerInPane() : nullptr;
+    if (!l || l->type() != LayerType::Raster) {
+        if (m_act_lfilter_none) m_act_lfilter_none->setChecked(true);
+        return;
+    }
+    auto* rl = static_cast<RasterLayer*>(l.get());
+    auto mode = rl->displayFilterMode();
+    if (m_act_lfilter_none)   m_act_lfilter_none->setChecked(mode == RasterLayer::DisplayFilterMode::None);
+    if (m_act_lfilter_check)  m_act_lfilter_check->setChecked(mode == RasterLayer::DisplayFilterMode::Checkerboard);
+    if (m_act_lfilter_vswipe) m_act_lfilter_vswipe->setChecked(mode == RasterLayer::DisplayFilterMode::VerticalSwipe);
+    if (m_act_lfilter_hswipe) m_act_lfilter_hswipe->setChecked(mode == RasterLayer::DisplayFilterMode::HorizontalSwipe);
 }
 

@@ -134,7 +134,16 @@ public:
         Navigate = 0,
         Inspect,
         MeasureDistance,
-        MeasureArea
+        MeasureArea,
+        Snr,
+        Mtf
+    };
+
+    enum class DisplayFilterMode {
+        None = 0,
+        Checkerboard,
+        VerticalSwipe,
+        HorizontalSwipe
     };
 
     ToolMode toolMode() const { return m_tool_mode; }
@@ -142,6 +151,24 @@ public:
     void clearMeasurement();
     const std::vector<QPointF>& measurementPoints() const { return m_measure_points; }
     bool isMeasurementFinished() const { return m_measure_finished; }
+
+    DisplayFilterMode displayFilterMode() const { return m_filter_mode; }
+    void setDisplayFilterMode(DisplayFilterMode mode);
+
+    int displayFilterCheckSize() const { return m_filter_check_size; }
+    void setDisplayFilterCheckSize(int sz);
+
+    float displayFilterSwipeX() const { return m_filter_swipe_x; }
+    void setDisplayFilterSwipeX(float x);
+
+    float displayFilterSwipeY() const { return m_filter_swipe_y; }
+    void setDisplayFilterSwipeY(float y);
+
+    int snrMtfWindowSize() const { return m_snr_mtf_window_size; }
+    void setSnrMtfWindowSize(int sz);
+    void clearSnrMtfRegion();
+
+    std::shared_ptr<Layer> activeLayerInPane() const;
 
     // Inspect mode: left-click → inspect active layer, right-click → inspect all
     bool inspectMode() const { return m_tool_mode == ToolMode::Inspect; }
@@ -190,9 +217,12 @@ signals:
     void cameraChanged(const Camera& camera);
     void pixelInspectRequest(double geo_x, double geo_y);     // inspect active layer
     void pixelInspectAllRequest(double geo_x, double geo_y);  // inspect all layers
+    void snrRequested(RasterLayer* layer, int col, int row, double geo_x, double geo_y);
+    void mtfRequested(RasterLayer* layer, int col, int row, double geo_x, double geo_y);
     void canvasResized(int w, int h);
     void inspectModeChanged(bool on);
     void toolModeChanged(ToolMode mode);
+    void displayFilterChanged(DisplayFilterMode mode);
     void measurementUpdated(double distanceMeters, double areaM2, const QString& summary);
     void layerDropped(int layerIndex);   // a layer was dragged from the panel onto this pane
     void paneAssignDropped(uint64_t paneId);   // a pane was dragged (by ID label) onto this pane (Phase 6.4)
@@ -296,17 +326,35 @@ private:
     void renderTriangle();
     void repositionOverlays();
     void drawMeasurementOverlay();
+    void drawSnrMtfOverlay();
+    void drawDisplayFilterOverlay();
     // Draw the Performance HUD overlay (FR-APP-14) — called at the end of paintGL,
     // after the frame time is recorded, so the HUD's own paint cost isn't counted.
     void drawPerfHud();
+
+    // Display filter & SNR/MTF state
+    DisplayFilterMode m_filter_mode{DisplayFilterMode::None};
+    int               m_filter_check_size{64};
+    float             m_filter_swipe_x{0.5f};
+    float             m_filter_swipe_y{0.5f};
+    bool              m_dragging_v_swipe{false};
+    bool              m_dragging_h_swipe{false};
+
+    int               m_snr_mtf_window_size{5};
+    bool              m_snr_mtf_has_region{false};
+    int               m_snr_mtf_col{0};
+    int               m_snr_mtf_row{0};
+    double            m_snr_mtf_geo_x{0.0};
+    double            m_snr_mtf_geo_y{0.0};
+    bool              m_snr_mtf_has_hover{false};
+    double            m_snr_mtf_hover_geo_x{0.0};
+    double            m_snr_mtf_hover_geo_y{0.0};
     // GL context-loss recovery (FR-ERR-7): free GL resources while the dying
     // context is still current so the next initializeGL() rebuilds them.
     void handleContextLoss();
     // Layers shown in THIS pane (filtered from the shared manager by paneId).
     std::vector<std::shared_ptr<Layer>> paneLayers() const;
     int  paneLayerCount() const;
-    // The app-wide active layer, but only if it belongs to this pane (else null).
-    std::shared_ptr<Layer> activeLayerInPane() const;
     // Whether this pane's representative raster (active-in-pane, else the first raster the pane
     // shows) is in a geographic CRS — drives the scale bar's distance units (Phase 6.4.5).
     bool paneIsGeographic() const;
@@ -319,6 +367,7 @@ private:
     // TileRenderer status callback, deferred out of paintGL. `nativeFallback` selects the
     // warning vs the informational notice.
     void showReprojectionNotice(uint64_t layer_id, bool nativeFallback);
+    void drawToolModeBadge();
 
     // --- Per-pane Project CRS state (Phase 11) ---------------------------------
     std::string m_project_wkt;                 // "" = geographic/identity

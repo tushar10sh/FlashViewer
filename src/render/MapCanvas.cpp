@@ -456,9 +456,20 @@ void MapCanvas::paintGL() {
         m_osm_renderer->render(*this, m_camera);
 
     auto pane_layers = paneLayers();
-    if (!pane_layers.empty())
+    if (!pane_layers.empty()) {
+        FilterParams filterParams;
+        filterParams.viewportWidth = static_cast<float>(m_camera.viewportWidth());
+        filterParams.viewportHeight = static_cast<float>(m_camera.viewportHeight());
+        if (m_filter_mode != DisplayFilterMode::None && m_tool_mode == ToolMode::Navigate) {
+            filterParams.filterMode = static_cast<int>(m_filter_mode);
+            filterParams.checkSize = static_cast<float>(m_filter_check_size);
+            filterParams.swipePos = (m_filter_mode == DisplayFilterMode::VerticalSwipe)
+                ? m_filter_swipe_x
+                : m_filter_swipe_y;
+        }
         any_missing = !m_tile_renderer->render(*this, m_camera, pane_layers,
-                                               m_project_wkt, m_crs_epoch);
+                                               m_project_wkt, m_crs_epoch, filterParams);
+    }
 
     // Vector layer overlay drawn on top of imagery
     if (m_vector_renderer && !pane_layers.empty()) {
@@ -543,6 +554,15 @@ void MapCanvas::paintGL() {
 
     // Measurement overlay (Distance and Area tools)
     drawMeasurementOverlay();
+
+    // SNR / MTF region overlay
+    drawSnrMtfOverlay();
+
+    // Display Filter Overlay (Swipe lines / Checkerboard badge)
+    drawDisplayFilterOverlay();
+
+    // Active tool mode badge (bottom-left corner next to scale bar)
+    drawToolModeBadge();
 
     // Frame timer (NFR-PERF-1): record this frame's render cost, then draw the HUD
     // (FR-APP-14) last so its own paint isn't included in the measured frame time.
@@ -908,19 +928,20 @@ void MapCanvas::fitToLayers() {
         m_camera.setViewportSize(width(), height());
         m_camera.fitToExtent(combined);
         update();
-        emit cameraChanged(m_camera);
+    emit cameraChanged(m_camera);
         emitZoomLevel();
     }
 }
-
-// --------------------------------------------------------------------------
-// Mouse events
 
 void MapCanvas::setToolMode(ToolMode mode) {
     if (m_tool_mode == mode) return;
     m_tool_mode = mode;
 
-    if (mode == ToolMode::Inspect) {
+    if (mode != ToolMode::Snr && mode != ToolMode::Mtf) {
+        m_snr_mtf_has_region = false;
+    }
+
+    if (mode == ToolMode::Inspect || mode == ToolMode::Snr || mode == ToolMode::Mtf) {
         setCursor(Qt::CrossCursor);
     } else if (mode == ToolMode::MeasureDistance || mode == ToolMode::MeasureArea) {
         setCursor(Qt::CrossCursor);
@@ -934,6 +955,247 @@ void MapCanvas::setToolMode(ToolMode mode) {
     emit inspectModeChanged(mode == ToolMode::Inspect);
     emit toolModeChanged(m_tool_mode);
     update();
+}
+
+void MapCanvas::setDisplayFilterMode(DisplayFilterMode mode) {
+    if (m_filter_mode == mode) return;
+    m_filter_mode = mode;
+    emit displayFilterChanged(m_filter_mode);
+    update();
+}
+
+void MapCanvas::setDisplayFilterCheckSize(int sz) {
+    if (sz < 4) sz = 4;
+    m_filter_check_size = sz;
+    update();
+}
+
+void MapCanvas::setDisplayFilterSwipeX(float x) {
+    m_filter_swipe_x = std::clamp(x, 0.0f, 1.0f);
+    update();
+}
+
+void MapCanvas::setDisplayFilterSwipeY(float y) {
+    m_filter_swipe_y = std::clamp(y, 0.0f, 1.0f);
+    update();
+}
+
+void MapCanvas::setSnrMtfWindowSize(int sz) {
+    if (sz < 3) sz = 3;
+    if (sz % 2 == 0) sz += 1;
+    m_snr_mtf_window_size = sz;
+    update();
+}
+
+void MapCanvas::clearSnrMtfRegion() {
+    m_snr_mtf_has_region = false;
+    update();
+}
+
+void MapCanvas::drawSnrMtfOverlay() {
+    if (m_tool_mode != ToolMode::Snr && m_tool_mode != ToolMode::Mtf)
+        return;
+
+    std::shared_ptr<Layer> rep = activeLayerInPane();
+    if (!rep || rep->type() != LayerType::Raster || !rep->visible()) {
+        for (const auto& l : paneLayers())
+            if (l && l->type() == LayerType::Raster && l->visible()) { rep = l; break; }
+    }
+    if (!rep) return;
+    auto* rl = static_cast<RasterLayer*>(rep.get());
+    auto* ds = rl->dataset();
+    if (!ds) return;
+
+    const std::string resamp =
+        fvDefaultResampling(static_cast<GDALDataType>(ds->bandDataType(1)),
+                            ds->bandHasColorTable(1));
+    RasterDataset::WarpedView wv = ds->warpedView(m_project_wkt, resamp);
+    if (wv.failed) return;
+
+    QPainter p(this);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.setFont(QApplication::font());
+
+    const double* g = wv.gt.gt;
+    int half = m_snr_mtf_window_size / 2;
+
+    auto drawRegionBox = [&](int col, int row, const QColor& color, const QString& tag) {
+        int c0 = std::max(0, col - half);
+        int r0 = std::max(0, row - half);
+        int c1 = std::min(wv.width - 1, col + half);
+        int r1 = std::min(wv.height - 1, row + half);
+
+        auto cornerGeo = [&](int P, int L) -> QPointF {
+            return QPointF(g[0] + P * g[1] + L * g[2],
+                           g[3] + P * g[4] + L * g[5]);
+        };
+
+        std::array<QPointF, 4> corners{ cornerGeo(c0, r0),
+                                        cornerGeo(c1 + 1, r0),
+                                        cornerGeo(c1 + 1, r1 + 1),
+                                        cornerGeo(c0, r1 + 1) };
+
+        QPolygonF poly;
+        for (int i = 0; i < 4; ++i) {
+            auto s = m_camera.geoToScreen(corners[i].x(), corners[i].y());
+            poly << QPointF(s.x, s.y);
+        }
+
+        p.setPen(QPen(color, 2.0, Qt::DashLine));
+        QColor fillC = color;
+        fillC.setAlpha(45);
+        p.setBrush(fillC);
+        p.drawPolygon(poly);
+    };
+
+    if (m_snr_mtf_has_region) {
+        QColor col = (m_tool_mode == ToolMode::Snr) ? QColor(76, 175, 80) : QColor(255, 87, 34);
+        drawRegionBox(m_snr_mtf_col, m_snr_mtf_row, col, QString());
+    }
+}
+
+void MapCanvas::drawDisplayFilterOverlay() {
+    RasterLayer::DisplayFilterMode filterMode = static_cast<RasterLayer::DisplayFilterMode>(m_filter_mode);
+    float swipeX = m_filter_swipe_x;
+    float swipeY = m_filter_swipe_y;
+    int checkSize = m_filter_check_size;
+
+    if (auto l = activeLayerInPane(); l && l->type() == LayerType::Raster) {
+        auto* rl = static_cast<RasterLayer*>(l.get());
+        if (rl->displayFilterMode() != RasterLayer::DisplayFilterMode::None) {
+            filterMode = rl->displayFilterMode();
+            swipeX = rl->displayFilterSwipeX();
+            swipeY = rl->displayFilterSwipeY();
+            checkSize = rl->displayFilterCheckSize();
+        }
+    }
+
+    if (filterMode == RasterLayer::DisplayFilterMode::None || m_tool_mode != ToolMode::Navigate)
+        return;
+
+    QPainter p(this);
+    p.setRenderHint(QPainter::Antialiasing, true);
+
+    QFont font = QApplication::font();
+    font.setPointSize(9);
+    font.setBold(true);
+    p.setFont(font);
+
+    if (filterMode == RasterLayer::DisplayFilterMode::VerticalSwipe) {
+        float x = swipeX * width();
+        p.setPen(QPen(QColor(0, 0, 0, 180), 4.0));
+        p.drawLine(QPointF(x, 0), QPointF(x, height()));
+        p.setPen(QPen(QColor(0, 210, 255, 255), 2.0));
+        p.drawLine(QPointF(x, 0), QPointF(x, height()));
+
+        float cy = height() * 0.5f;
+        QRectF handleRect(x - 12, cy - 20, 24, 40);
+        p.setPen(QPen(QColor(0, 0, 0, 180), 1.5));
+        p.setBrush(QColor(15, 23, 35, 230));
+        p.drawRoundedRect(handleRect, 6, 6);
+
+        p.setPen(QColor(0, 210, 255));
+        p.drawLine(QPointF(x - 5, cy - 8), QPointF(x - 5, cy + 8));
+        p.drawLine(QPointF(x + 5, cy - 8), QPointF(x + 5, cy + 8));
+
+        QRectF labelRect(x - 60, 10, 120, 22);
+        p.setPen(QPen(QColor(0, 0, 0, 180), 1.0));
+        p.setBrush(QColor(13, 17, 23, 220));
+        p.drawRoundedRect(labelRect, 4, 4);
+        p.setPen(QColor(220, 240, 255));
+        p.drawText(labelRect, Qt::AlignCenter, QString("Swipe X: %1%").arg(int(swipeX * 100)));
+    } else if (filterMode == RasterLayer::DisplayFilterMode::HorizontalSwipe) {
+        float y = swipeY * height();
+        p.setPen(QPen(QColor(0, 0, 0, 180), 4.0));
+        p.drawLine(QPointF(0, y), QPointF(width(), y));
+        p.setPen(QPen(QColor(0, 210, 255, 255), 2.0));
+        p.drawLine(QPointF(0, y), QPointF(width(), y));
+
+        float cx = width() * 0.5f;
+        QRectF handleRect(cx - 20, y - 12, 40, 24);
+        p.setPen(QPen(QColor(0, 0, 0, 180), 1.5));
+        p.setBrush(QColor(15, 23, 35, 230));
+        p.drawRoundedRect(handleRect, 6, 6);
+
+        p.setPen(QColor(0, 210, 255));
+        p.drawLine(QPointF(cx - 8, y - 5), QPointF(cx + 8, y - 5));
+        p.drawLine(QPointF(cx - 8, y + 5), QPointF(cx + 8, y + 5));
+
+        QRectF labelRect(10, y - 11, 120, 22);
+        p.setPen(QPen(QColor(0, 0, 0, 180), 1.0));
+        p.setBrush(QColor(13, 17, 23, 220));
+        p.drawRoundedRect(labelRect, 4, 4);
+        p.setPen(QColor(220, 240, 255));
+        p.drawText(labelRect, Qt::AlignCenter, QString("Swipe Y: %1%").arg(int(swipeY * 100)));
+    } else if (filterMode == RasterLayer::DisplayFilterMode::Checkerboard) {
+        QRectF labelRect(width() - 160, 10, 150, 22);
+        p.setPen(QPen(QColor(0, 0, 0, 180), 1.0));
+        p.setBrush(QColor(13, 17, 23, 220));
+        p.drawRoundedRect(labelRect, 4, 4);
+        p.setPen(QColor(0, 230, 150));
+        p.drawText(labelRect, Qt::AlignCenter, QString("Checkerboard [%1px]").arg(checkSize));
+    }
+}
+
+void MapCanvas::drawToolModeBadge() {
+    if (m_tool_mode == ToolMode::Navigate)
+        return;
+
+    QString toolName;
+    QColor accentColor(0, 210, 255);
+
+    switch (m_tool_mode) {
+    case ToolMode::Inspect:
+        toolName = tr("Inspect Tool");
+        accentColor = QColor(0, 210, 255);
+        break;
+    case ToolMode::MeasureDistance:
+        toolName = tr("Measure Distance Tool");
+        accentColor = QColor(0, 210, 255);
+        break;
+    case ToolMode::MeasureArea:
+        toolName = tr("Measure Area Tool");
+        accentColor = QColor(0, 230, 150);
+        break;
+    case ToolMode::Snr:
+        toolName = QString("SNR Tool [%1x%1]").arg(m_snr_mtf_window_size);
+        accentColor = QColor(76, 175, 80);
+        break;
+    case ToolMode::Mtf:
+        toolName = QString("MTF Tool [%1x%1]").arg(m_snr_mtf_window_size);
+        accentColor = QColor(255, 87, 34);
+        break;
+    default:
+        return;
+    }
+
+    QPainter p(this);
+    p.setRenderHint(QPainter::Antialiasing, true);
+
+    QFont font = QApplication::font();
+    font.setPointSize(9);
+    font.setBold(true);
+    p.setFont(font);
+
+    QFontMetrics fm(font);
+    int textW = fm.horizontalAdvance(toolName);
+    int badgeW = textW + 20;
+    int badgeH = 24;
+
+    int bx = 10;
+    if (m_scale_bar && m_scalebar_visible && m_scale_bar->isVisible()) {
+        bx = m_scale_bar->x() + m_scale_bar->width() + 10;
+    }
+    int by = height() - badgeH - 10;
+
+    QRectF badgeRect(bx, by, badgeW, badgeH);
+
+    p.setPen(QPen(accentColor, 1.2));
+    p.setBrush(QColor(13, 17, 23, 230));
+    p.drawRoundedRect(badgeRect, 5, 5);
+
+    p.setPen(QColor(230, 240, 250));
+    p.drawText(badgeRect, Qt::AlignCenter, toolName);
 }
 
 void MapCanvas::clearMeasurement() {
@@ -1188,57 +1450,6 @@ void MapCanvas::drawMeasurementOverlay() {
         QString areaText = QString("Area: %1").arg(fv::formatArea(area));
         drawPill(center, areaText, QColor(0, 255, 170));
     }
-
-    // 6. Draw floating HUD Summary Banner at top-center of the canvas
-    std::vector<QPointF> allPts = m_measure_points;
-    if (hasCursorScreen) allPts.push_back(m_measure_cursor_geo);
-
-    double totalDist = fv::calculatePolylineDistance(allPts, m_project_wkt);
-    double totalArea = (isArea && allPts.size() >= 3) ? fv::calculatePolygonArea(allPts, m_project_wkt) : 0.0;
-
-    QString line1, line2;
-    if (isArea) {
-        line1 = QString("Area (Spherical Geodesic): %1  |  Perimeter: %2")
-                    .arg(fv::formatArea(totalArea), fv::formatDistance(totalDist));
-        line2 = m_measure_finished
-                    ? tr("Finished (%1 vertices) — Left-click to start new, Esc to clear").arg(allPts.size())
-                    : tr("Vertices: %1 — Left-click: add vertex, Right-click/Dbl-click: finish, Esc: clear").arg(allPts.size());
-    } else {
-        line1 = QString("Distance (Haversine): %1")
-                    .arg(fv::formatDistanceDetailed(totalDist));
-        line2 = m_measure_finished
-                    ? tr("Finished (%1 points) — Left-click to start new, Esc to clear").arg(allPts.size())
-                    : tr("Points: %1 — Left-click: add point, Right-click/Dbl-click: finish, Esc: clear").arg(allPts.size());
-    }
-
-    QFont boldFont = font;
-    boldFont.setPointSize(10);
-    boldFont.setBold(true);
-    QFont smallFont = font;
-    smallFont.setPointSize(8);
-    smallFont.setWeight(QFont::Normal);
-
-    QFontMetrics fmBold(boldFont);
-    QFontMetrics fmSmall(smallFont);
-    int w1 = fmBold.horizontalAdvance(line1);
-    int w2 = fmSmall.horizontalAdvance(line2);
-    int bannerW = std::max(w1, w2) + 24;
-    int bannerH = fmBold.height() + fmSmall.height() + 14;
-    int bx = (width() - bannerW) / 2;
-    int by = 12;
-
-    QRectF hudRect(bx, by, bannerW, bannerH);
-    p.setPen(QPen(isArea ? QColor(0, 230, 150, 140) : QColor(0, 210, 255, 140), 1.0));
-    p.setBrush(QColor(13, 17, 23, 235));
-    p.drawRoundedRect(hudRect, 6, 6);
-
-    p.setFont(boldFont);
-    p.setPen(isArea ? QColor(0, 240, 160) : QColor(0, 220, 255));
-    p.drawText(QRectF(bx + 12, by + 5, bannerW - 24, fmBold.height()), Qt::AlignLeft | Qt::AlignVCenter, line1);
-
-    p.setFont(smallFont);
-    p.setPen(QColor(180, 195, 205));
-    p.drawText(QRectF(bx + 12, by + 7 + fmBold.height(), bannerW - 24, fmSmall.height()), Qt::AlignLeft | Qt::AlignVCenter, line2);
 }
 
 void MapCanvas::mousePressEvent(QMouseEvent* event) {
@@ -1250,6 +1461,73 @@ void MapCanvas::mousePressEvent(QMouseEvent* event) {
         m_last_mouse_pos = event->position();
         setCursor(Qt::ClosedHandCursor);
         return;
+    }
+
+    // Determine active filter mode for this pane/layer
+    RasterLayer::DisplayFilterMode activeFilterMode = static_cast<RasterLayer::DisplayFilterMode>(m_filter_mode);
+    std::shared_ptr<RasterLayer> activeRaster;
+    if (auto l = activeLayerInPane(); l && l->type() == LayerType::Raster) {
+        activeRaster = std::static_pointer_cast<RasterLayer>(l);
+        if (activeRaster->displayFilterMode() != RasterLayer::DisplayFilterMode::None) {
+            activeFilterMode = activeRaster->displayFilterMode();
+        }
+    }
+
+    if (m_tool_mode == ToolMode::Navigate && activeFilterMode != RasterLayer::DisplayFilterMode::None) {
+        if (event->button() == Qt::LeftButton) {
+            if (activeFilterMode == RasterLayer::DisplayFilterMode::VerticalSwipe) {
+                m_dragging_v_swipe = true;
+                m_filter_swipe_x = std::clamp(static_cast<float>(event->position().x()) / std::max(1, width()), 0.0f, 1.0f);
+                if (activeRaster) activeRaster->setDisplayFilterSwipeX(m_filter_swipe_x);
+                setCursor(Qt::SplitHCursor);
+                update();
+                return;
+            } else if (activeFilterMode == RasterLayer::DisplayFilterMode::HorizontalSwipe) {
+                m_dragging_h_swipe = true;
+                m_filter_swipe_y = std::clamp(static_cast<float>(event->position().y()) / std::max(1, height()), 0.0f, 1.0f);
+                if (activeRaster) activeRaster->setDisplayFilterSwipeY(m_filter_swipe_y);
+                setCursor(Qt::SplitVCursor);
+                update();
+                return;
+            }
+        }
+    }
+
+    if (m_tool_mode == ToolMode::Snr || m_tool_mode == ToolMode::Mtf) {
+        if (event->button() == Qt::LeftButton) {
+            auto geo = m_camera.screenToGeo(event->position().x(), event->position().y());
+            std::shared_ptr<Layer> rep = activeLayerInPane();
+            if (!rep || rep->type() != LayerType::Raster || !rep->visible()) {
+                for (const auto& l : paneLayers())
+                    if (l && l->type() == LayerType::Raster && l->visible()) { rep = l; break; }
+            }
+            if (rep && rep->type() == LayerType::Raster) {
+                auto* rl = static_cast<RasterLayer*>(rep.get());
+                if (auto* ds = rl->dataset()) {
+                    auto wv = ds->warpedView(m_project_wkt);
+                    if (!wv.failed) {
+                        auto px = wv.gt.geoToPixel(geo.x, geo.y);
+                        int col = static_cast<int>(std::floor(px.x + 0.5));
+                        int row = static_cast<int>(std::floor(px.y + 0.5));
+                        if (col >= 0 && row >= 0 && col < wv.width && row < wv.height) {
+                            m_snr_mtf_col = col;
+                            m_snr_mtf_row = row;
+                            m_snr_mtf_geo_x = geo.x;
+                            m_snr_mtf_geo_y = geo.y;
+                            m_snr_mtf_has_region = true;
+                            update();
+
+                            if (m_tool_mode == ToolMode::Snr) {
+                                emit snrRequested(rl, col, row, geo.x, geo.y);
+                            } else {
+                                emit mtfRequested(rl, col, row, geo.x, geo.y);
+                            }
+                        }
+                    }
+                }
+            }
+            return;
+        }
     }
 
     if (m_tool_mode == ToolMode::MeasureDistance || m_tool_mode == ToolMode::MeasureArea) {
@@ -1337,6 +1615,23 @@ void MapCanvas::mouseDoubleClickEvent(QMouseEvent* event) {
 void MapCanvas::mouseMoveEvent(QMouseEvent* event) {
     QPointF pos = event->position();
 
+    if (m_dragging_v_swipe) {
+        m_filter_swipe_x = std::clamp(static_cast<float>(pos.x()) / std::max(1, width()), 0.0f, 1.0f);
+        if (auto l = activeLayerInPane(); l && l->type() == LayerType::Raster) {
+            static_cast<RasterLayer*>(l.get())->setDisplayFilterSwipeX(m_filter_swipe_x);
+        }
+        update();
+        return;
+    }
+    if (m_dragging_h_swipe) {
+        m_filter_swipe_y = std::clamp(static_cast<float>(pos.y()) / std::max(1, height()), 0.0f, 1.0f);
+        if (auto l = activeLayerInPane(); l && l->type() == LayerType::Raster) {
+            static_cast<RasterLayer*>(l.get())->setDisplayFilterSwipeY(m_filter_swipe_y);
+        }
+        update();
+        return;
+    }
+
     if (m_panning || m_mid_panning) {
         QPointF delta = pos - m_last_mouse_pos;
         m_camera.pan(delta.x(), delta.y());
@@ -1383,11 +1678,32 @@ void MapCanvas::mouseMoveEvent(QMouseEvent* event) {
 }
 
 void MapCanvas::mouseReleaseEvent(QMouseEvent* event) {
-    if (event->button() == Qt::LeftButton)   m_panning     = false;
+    if (event->button() == Qt::LeftButton) {
+        m_panning = false;
+        m_dragging_v_swipe = false;
+        m_dragging_h_swipe = false;
+    }
     if (event->button() == Qt::MiddleButton) m_mid_panning = false;
 
-    if (!m_panning && !m_mid_panning)
-        setCursor(m_tool_mode != ToolMode::Navigate ? Qt::CrossCursor : Qt::ArrowCursor);
+    RasterLayer::DisplayFilterMode activeFilterMode = static_cast<RasterLayer::DisplayFilterMode>(m_filter_mode);
+    if (auto l = activeLayerInPane(); l && l->type() == LayerType::Raster) {
+        auto* rl = static_cast<RasterLayer*>(l.get());
+        if (rl->displayFilterMode() != RasterLayer::DisplayFilterMode::None) {
+            activeFilterMode = rl->displayFilterMode();
+        }
+    }
+
+    if (!m_panning && !m_mid_panning) {
+        if (m_tool_mode != ToolMode::Navigate) {
+            setCursor(Qt::CrossCursor);
+        } else if (activeFilterMode == RasterLayer::DisplayFilterMode::VerticalSwipe) {
+            setCursor(Qt::SplitHCursor);
+        } else if (activeFilterMode == RasterLayer::DisplayFilterMode::HorizontalSwipe) {
+            setCursor(Qt::SplitVCursor);
+        } else {
+            setCursor(Qt::ArrowCursor);
+        }
+    }
 
     QOpenGLWidget::mouseReleaseEvent(event);
 }

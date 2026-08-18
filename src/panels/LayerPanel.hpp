@@ -104,6 +104,7 @@ signals:
     void activeLayerChanged(int index);
     void layerDatasetChanged(int index);  // emitted when subdataset combo switches
     void fitToLayerRequested(int index);
+    void layerSettingsRequested(int index);
     void paneAssignmentRequested(int layerIndex, quint64 paneId);  // "To Pane" (Phase 6.3)
     // Phase 18 #8: how many layers / pane groups are highlighted. MainWindow blanks the
     // single-subject panels (Histogram / Band / Layer Info) when >1 layer is selected.

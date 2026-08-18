@@ -643,9 +643,10 @@ TEST_CASE("TC-LYR-22 clicking a row bolds it as the active layer",
 
     auto* tree = panelTree(panel);
     REQUIRE(tree != nullptr);
-    auto* rowA = tree->topLevelItem(0)->child(0);
-    auto* rowB = tree->topLevelItem(0)->child(1);
+    auto* rowB = tree->topLevelItem(0)->child(0);   // b (index 1, top visual row)
+    auto* rowA = tree->topLevelItem(0)->child(1);   // a (index 0, bottom visual row)
     REQUIRE(rowB != nullptr);
+    REQUIRE(rowA != nullptr);
 
     // The delegate's bold flag: Qt::UserRole + 2 on the name column (kActiveRole in
     // LayerPanel.cpp). Read as state rather than rendered, so the case pins what the painter

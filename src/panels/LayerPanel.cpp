@@ -618,7 +618,8 @@ void LayerPanel::rebuildList() {
         if (!headerTips.isEmpty())
             header->setToolTip(kColName, headerTips.join('\n'));
 
-        for (int i : grp.layerIndices) {
+        for (auto it = grp.layerIndices.rbegin(); it != grp.layerIndices.rend(); ++it) {
+            int i = *it;
             auto layer = m_mgr->layerAt(i);
             if (!layer) continue;
             auto* item = new QTreeWidgetItem(header);
@@ -1059,9 +1060,10 @@ void LayerPanel::onContextMenu(const QPoint& pos) {
     }
 
     QMenu menu(this);
-    auto* actRename = menu.addAction(tr("Rename"));
-    auto* actRemove = menu.addAction(tr("Remove"));
-    auto* actFit    = menu.addAction(tr("Fit to Layer"));
+    auto* actSettings = menu.addAction(tr("Layer Settings…"));
+    auto* actRename   = menu.addAction(tr("Rename"));
+    auto* actRemove   = menu.addAction(tr("Remove"));
+    auto* actFit      = menu.addAction(tr("Fit to Layer"));
 
     // NOTE: no "Show Colorbar" here — colorbar visibility is a PANE setting, offered by the
     // pane gear menu alone (user decision).
@@ -1090,6 +1092,11 @@ void LayerPanel::onContextMenu(const QPoint& pos) {
 
     auto* chosen = menu.exec(m_tree->viewport()->mapToGlobal(pos));
     if (!chosen) return;
+
+    if (chosen == actSettings) {
+        emit layerSettingsRequested(idx);
+        return;
+    }
 
     if (auto it = paneActions.constFind(chosen); it != paneActions.constEnd()) {
         emit paneAssignmentRequested(idx, it.value());

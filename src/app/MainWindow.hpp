@@ -46,6 +46,8 @@ class RasterLayer;
 class RasterDataset;
 class SpectralPlotPanel;
 class ScanPixProfilePanel;
+class SnrToolPanel;
+class MtfToolPanel;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -56,6 +58,7 @@ public:
     void openFiles(const QStringList& paths);
     void openVectorFiles(const QStringList& paths, uint64_t targetPaneId = 0);
     void showSettingsDialog();
+    void openLayerSettings(RasterLayer* layer = nullptr);
 
 public slots:
     void onThemeChanged(Theme t);
@@ -239,10 +242,19 @@ private:
     // mode change.
     QAction*               m_layout_acts[4]{nullptr, nullptr, nullptr, nullptr};
 
-    // Canvas tools: Inspect, Measure Distance, Measure Area
+    // Canvas tools: Inspect, Measure Distance, Measure Area, SNR, MTF
     QAction*               m_act_inspect{nullptr};
     QAction*               m_act_measure_dist{nullptr};
     QAction*               m_act_measure_area{nullptr};
+    QAction*               m_act_snr{nullptr};
+    QAction*               m_act_mtf{nullptr};
+    QAction*               m_act_layer_settings{nullptr};
+    QActionGroup*          m_layer_filter_group{nullptr};
+    QAction*               m_act_lfilter_none{nullptr};
+    QAction*               m_act_lfilter_check{nullptr};
+    QAction*               m_act_lfilter_vswipe{nullptr};
+    QAction*               m_act_lfilter_hswipe{nullptr};
+    void                   updateLayerMenuFilterChecks();
     void                   applyToolMode(MapCanvas::ToolMode mode);
 
     // View → Panels (FR-APP-9): tracked docks + pristine default layout snapshot.
@@ -276,6 +288,9 @@ private:
     // geometry (FR-APP-6) — QMainWindow::saveState no longer carries them.
     SpectralPlotPanel*     m_spectral_panel{nullptr};
     ScanPixProfilePanel*   m_profile_panel{nullptr};
+    SnrToolPanel*          m_snr_panel{nullptr};
+    MtfToolPanel*          m_mtf_panel{nullptr};
+
     /// Show, raise and focus a plot window, restoring its saved geometry the first time.
     void showPlotWindow(QWidget* w, const QString& key);
     // Closing one is handled in two places: the panel's own closeEvent() discards its plots
