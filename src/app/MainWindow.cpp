@@ -317,6 +317,65 @@ MainWindow::~MainWindow() = default;
 
 // --------------------------------------------------------------------------
 
+uint64_t MainWindow::preparePaneForRasterLayer(const std::shared_ptr<RasterDataset>& ds, const QString& layerName) {
+    if (!ds) return activePaneId();
+
+    uint64_t targetPaneId = activePaneId();
+    std::vector<std::shared_ptr<VectorLayer>> existingVectors;
+    for (int i = 0; i < m_layer_mgr->count(); ++i) {
+        auto l = m_layer_mgr->layerAt(i);
+        if (l && fvLayerInPane(*l, targetPaneId) && l->type() == LayerType::Vector) {
+            existingVectors.push_back(std::static_pointer_cast<VectorLayer>(l));
+        }
+    }
+
+    if (!existingVectors.empty()) {
+        const std::string rasterCrs = ds->crsWkt();
+        if (!rasterCrs.empty()) {
+            // Reproject existing vector layers to raster dataset CRS
+            for (auto& vl : existingVectors) {
+                if (!vl->dataset()) continue;
+                if (vl->dataset()->canReprojectTo(rasterCrs)) {
+                    QProgressDialog progress(
+                        tr("Reprojecting vector layer '%1' to raster CRS (%2)…")
+                            .arg(vl->name()).arg(fvCrsShortName(rasterCrs)),
+                        tr("Cancel"), 0, 100, this);
+                    progress.setWindowModality(Qt::ApplicationModal);
+                    progress.setMinimumDuration(150);
+                    progress.setValue(0);
+                    progress.show();
+                    progress.raise();
+                    progress.activateWindow();
+
+                    std::function<bool(int, int)> progressCb = [&](int cur, int tot) -> bool {
+                        progress.setValue(cur * 100 / std::max(1, tot));
+                        QApplication::processEvents();
+                        return !progress.wasCanceled();
+                    };
+                    vl->dataset()->geometriesForCrs(rasterCrs, progressCb);
+                }
+            }
+            if (auto* c = activeCanvas()) {
+                c->setProjectCrsWkt(rasterCrs, false);
+            }
+            return targetPaneId;
+        } else {
+            auto* newCanvas = addPane();
+            uint64_t newPid = newCanvas ? newCanvas->paneId() : targetPaneId;
+            if (newCanvas) {
+                int newPaneIdx = m_pane_layout->indexOfCanvas(newCanvas);
+                newCanvas->clearProjectCrsOverride();
+                newCanvas->setProjectCrsWkt("", false);
+                showErrorBanner(1, tr("Raster '%1' has no CRS: loaded into new unsynchronized %2.")
+                    .arg(layerName).arg(m_pane_layout->paneLabel(newPaneIdx)));
+            }
+            return newPid;
+        }
+    }
+
+    return targetPaneId;
+}
+
 void MainWindow::openFiles(const QStringList& paths) {
     for (const auto& path : paths) {
         const std::string stdPath = path.toStdString();
@@ -378,7 +437,7 @@ void MainWindow::openFiles(const QStringList& paths) {
                     layer->initSubdatasetMeta(stdPath, subs, idx);
                     layer->setName(varName);
                     if (geoloc_applied) registerCoordAssignment(*layer, *coords);
-                    layer->setPaneId(activePaneId());   // display on the active pane
+                    layer->setPaneId(preparePaneForRasterLayer(sub_ds, varName));
                     PerfMetrics::instance().markOpenStart(layer->layerId());  // NFR-PERF-3/4
                     m_layer_mgr->addLayer(layer);
                     FV_INFO("Loaded subdataset '{}' from '{}'", subPath, stdPath);
@@ -487,7 +546,7 @@ void MainWindow::openFiles(const QStringList& paths) {
 
         auto layer = std::make_shared<RasterLayer>(ds);
         if (geoloc_applied) registerCoordAssignment(*layer, *coords);
-        layer->setPaneId(activePaneId());   // display on the active pane
+        layer->setPaneId(preparePaneForRasterLayer(ds, fname));
         PerfMetrics::instance().markOpenStart(layer->layerId());   // NFR-PERF-3/4 probe
         m_layer_mgr->addLayer(layer);
         FV_INFO("Loaded '{}'", stdPath);
@@ -630,7 +689,7 @@ bool MainWindow::loadCombinedSubdatasets(
     layer->setName(tr("%1 (%2 variables)")
                        .arg(QFileInfo(path).fileName())
                        .arg(indices.size()));
-    layer->setPaneId(activePaneId());
+    layer->setPaneId(preparePaneForRasterLayer(ds, layer->name()));
     PerfMetrics::instance().markOpenStart(layer->layerId());   // NFR-PERF-3/4
     m_layer_mgr->addLayer(layer);
     FV_INFO("Loaded {} variable(s) from '{}' as one {}-band layer",
@@ -826,10 +885,10 @@ void MainWindow::setupMenuBar() {
     });
 
     viewMenu->addSeparator();
-    auto* actOsm = viewMenu->addAction(tr("&OSM Basemap"));
-    actOsm->setCheckable(true);
-    actOsm->setChecked(m_canvas->osmRenderer()->isEnabled());
-    connect(actOsm, &QAction::toggled, this, &MainWindow::setOsmBasemapEnabled);
+    m_act_osm = viewMenu->addAction(tr("&OSM Basemap"));
+    m_act_osm->setCheckable(true);
+    m_act_osm->setChecked(m_canvas->osmRenderer()->isEnabled());
+    connect(m_act_osm, &QAction::toggled, this, &MainWindow::setOsmBasemapEnabled);
 
     // ---- Performance HUD (FR-APP-14, Phase 12) ----
     // App-wide overlay of live frame stats / open-latency / stalls / VRAM, mirroring
@@ -1909,6 +1968,29 @@ void MainWindow::assignLayerToPane(int layerIndex, uint64_t paneId) {
                 }
             }
 
+            // Check if the target pane contains an unreferenced raster dataset with no CRS
+            bool targetHasUnrefRaster = false;
+            QString unrefRasterName;
+            for (int i = 0; i < m_layer_mgr->count(); ++i) {
+                auto cand = m_layer_mgr->layerAt(i);
+                if (cand && fvLayerInPane(*cand, paneId) && cand->type() == LayerType::Raster) {
+                    auto* rl = static_cast<RasterLayer*>(cand.get());
+                    if (!rl->dataset() || rl->dataset()->crsWkt().empty()) {
+                        targetHasUnrefRaster = true;
+                        unrefRasterName = rl->name();
+                        break;
+                    }
+                }
+            }
+            if (targetHasUnrefRaster) {
+                QMessageBox::warning(this, tr("Cannot Overlay on Unreferenced Pane"),
+                    tr("Cannot move vector layer '%1' to %2 because it contains unreferenced raster dataset '%3' with no CRS.\n\n"
+                       "Vector layers require a georeferenced pane.")
+                    .arg(vl->name()).arg(targetLabel).arg(unrefRasterName));
+                if (m_layer_panel) m_layer_panel->refreshPanes();
+                return;
+            }
+
             const std::string targetCrs = target ? target->projectCrsWkt() : std::string();
             if (!targetCrs.empty() && targetCrs != vl->dataset()->crsWkt() && !vl->dataset()->crsWkt().empty()) {
                 std::string reason;
@@ -2706,6 +2788,43 @@ void MainWindow::openVectorFiles(const QStringList& paths, uint64_t targetPaneId
         }
     }
 
+    // Check if the target pane contains an unreferenced raster dataset with no CRS
+    bool targetHasUnreferencedRaster = false;
+    QString unrefRasterName;
+    for (int i = 0; i < m_layer_mgr->count(); ++i) {
+        auto l = m_layer_mgr->layerAt(i);
+        if (l && fvLayerInPane(*l, pid) && l->type() == LayerType::Raster) {
+            auto* rl = static_cast<RasterLayer*>(l.get());
+            if (!rl->dataset() || rl->dataset()->crsWkt().empty()) {
+                targetHasUnreferencedRaster = true;
+                unrefRasterName = rl->name();
+                break;
+            }
+        }
+    }
+
+    if (targetHasUnreferencedRaster) {
+        auto res = QMessageBox::warning(
+            this, tr("No CRS on Target Pane"),
+            tr("The target %1 contains raster dataset '%2' with no Coordinate Reference System (CRS).\n\n"
+               "Adding vector layers to an unreferenced pane is discouraged because vector features cannot be spatially aligned with pixel-space data.\n\n"
+               "Would you like to add this vector layer to a new pane instead?")
+                .arg(targetLabel).arg(unrefRasterName),
+            QMessageBox::Yes | QMessageBox::No | QMessageBox::Cancel,
+            QMessageBox::Yes);
+
+        if (res == QMessageBox::Cancel) {
+            return;
+        } else if (res == QMessageBox::Yes) {
+            auto* newCanvas = addPane();
+            if (newCanvas) {
+                targetCanvas = newCanvas;
+                pid = newCanvas->paneId();
+                targetLabel = m_pane_layout->paneLabel(m_pane_layout->indexOfCanvas(newCanvas));
+            }
+        }
+    }
+
     const std::string targetCrs = targetCanvas ? targetCanvas->projectCrsWkt() : std::string();
 
     for (const QString& path : paths) {
@@ -2780,6 +2899,32 @@ void MainWindow::setOsmBasemapEnabled(bool on) {
     const QString osmCrsName = fvCrsShortName(osmCrsWkt);
 
     if (on) {
+        // When loading/displaying datasets with no CRS, OSM basemap selection should throw an error dialog box
+        for (int i = 0; i < m_pane_layout->paneCount(); ++i) {
+            auto* c = m_pane_layout->paneCanvas(i);
+            if (!c) continue;
+            uint64_t pid = c->paneId();
+            for (int li = 0; li < m_layer_mgr->count(); ++li) {
+                auto l = m_layer_mgr->layerAt(li);
+                if (!l || !fvLayerInPane(*l, pid) || l->type() != LayerType::Raster) continue;
+                auto* rl = static_cast<RasterLayer*>(l.get());
+                if (!rl->dataset() || rl->dataset()->crsWkt().empty()) {
+                    QMessageBox::critical(
+                        this, tr("Cannot Activate OSM Basemap"),
+                        tr("Cannot activate OpenStreetMap Basemap:\n\n"
+                           "The raster dataset '%1' in %2 has no Coordinate Reference System (CRS).\n\n"
+                           "OSM Basemap requires georeferenced data with a valid spatial reference.")
+                            .arg(rl->name())
+                            .arg(m_pane_layout->paneLabel(i)));
+                    if (m_act_osm) {
+                        QSignalBlocker blocker(m_act_osm);
+                        m_act_osm->setChecked(false);
+                    }
+                    return;
+                }
+            }
+        }
+
         showErrorBanner(1, tr("OSM Basemap activated: Pane CRS set to %1 (Web Mercator). Reprojecting vector and raster layers…").arg(osmCrsName));
 
         for (int i = 0; i < m_pane_layout->paneCount(); ++i) {

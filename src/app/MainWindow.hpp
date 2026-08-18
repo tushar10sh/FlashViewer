@@ -128,6 +128,7 @@ private:
     // Open the Project-CRS picker for a pane (gear-menu / clickable status label, Phase 11).
     void       openProjectCrsPicker(MapCanvas* canvas);
     void       setOsmBasemapEnabled(bool on);
+    uint64_t   preparePaneForRasterLayer(const std::shared_ptr<RasterDataset>& ds, const QString& layerName);
     // selectTopLayer: on a pane change, also make the pane's topmost layer active (for a
     // canvas click). Pass false when the activation is driven by a layer selection, so the
     // already-selected layer stays active (Phase 6.3 fix).
@@ -231,6 +232,7 @@ private:
     // kept so onActiveLayerChanged can reflect the active layer's current mode.
     QActionGroup*          m_resample_group{nullptr};
     QAction*               m_resample_acts[3]{nullptr, nullptr, nullptr};
+    QAction*               m_act_osm{nullptr};
 
     // View → Pane Layout (FR-PNE-8): the 4 checkable mode actions, indexed Full / HalfH /
     // HalfV / Quarter, kept so applyPaneLayoutMode can re-tick them after a programmatic
