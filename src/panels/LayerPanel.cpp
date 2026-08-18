@@ -186,7 +186,19 @@ public:
 
 protected:
     void wheelEvent(QWheelEvent* e) override {
-        if (hasFocus()) { QComboBox::wheelEvent(e); return; }
+        if (hasFocus()) {
+            int delta = e->angleDelta().y();
+            if (delta != 0) {
+                int nextIdx = currentIndex() + (delta < 0 ? 1 : -1);
+                if (nextIdx >= 0 && nextIdx < count()) {
+                    setCurrentIndex(nextIdx);
+                    e->accept();
+                    return;
+                }
+            }
+            QComboBox::wheelEvent(e);
+            return;
+        }
         e->ignore();
     }
 };
@@ -1015,6 +1027,11 @@ void LayerPanel::onContextMenu(const QPoint& pos) {
         if (!panes.empty()) {
             const quint64 cur = m_mgr->layerAt(idx) ? m_mgr->layerAt(idx)->paneId() : 0;
             auto* sub = menu.addMenu(tr("To Pane"));
+            auto* actAll = sub->addAction(tr("All Panes (Global Overlay)"));
+            actAll->setCheckable(true);
+            actAll->setChecked(cur == kAllPanesId);
+            paneActions.insert(actAll, kAllPanesId);
+            sub->addSeparator();
             for (const auto& [pid, label] : panes) {
                 auto* a = sub->addAction(label);
                 a->setCheckable(true);
