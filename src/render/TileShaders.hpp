@@ -54,6 +54,12 @@ uniform vec4 u_nodata_color;
 uniform float u_bleed_guard;   // 1 = bilinear filtering active → run 2×2 guard
 uniform int   u_resample;      // 0 bilinear, 1 bicubic2 (B-spline), 2 bicubic4 (Catmull-Rom)
 uniform vec4  u_inner;         // inner rect (x,y,w,h) in texels within the aproned tile texture; (0,0,0,0)=whole texture
+uniform int   u_filter_mode;   // 0=None, 1=Checkerboard, 2=VertSwipe, 3=HorizSwipe
+uniform int   u_filter_role;   // 0=Normal, 1=Top Layer, 2=Background Layer
+uniform float u_check_size;
+uniform float u_swipe_pos;
+uniform float u_viewport_width;
+uniform float u_viewport_height;
 in vec2 v_uv; out vec4 frag_color;
 
 #define EMIT_NODATA { if (u_nodata_color.a < 0.01) discard; frag_color = u_nodata_color; return; }
@@ -143,6 +149,21 @@ bool footprintBad(sampler2D t, vec2 uv) {
 }
 
 void main() {
+    if (u_filter_mode == 1) {
+        ivec2 p = ivec2(gl_FragCoord.x, gl_FragCoord.y) / max(int(u_check_size), 1);
+        bool is_even = ((p.x + p.y) % 2) == 0;
+        if (u_filter_role == 1 && !is_even) discard;
+        if (u_filter_role == 2 && is_even) discard;
+    } else if (u_filter_mode == 2) {
+        float normX = gl_FragCoord.x / max(u_viewport_width, 1.0);
+        if (u_filter_role == 1 && normX > u_swipe_pos) discard;
+        if (u_filter_role == 2 && normX <= u_swipe_pos) discard;
+    } else if (u_filter_mode == 3) {
+        float normY = (u_viewport_height - gl_FragCoord.y) / max(u_viewport_height, 1.0);
+        if (u_filter_role == 1 && normY > u_swipe_pos) discard;
+        if (u_filter_role == 2 && normY <= u_swipe_pos) discard;
+    }
+
     // Map v_uv to the inner tile rect inside the aproned texture (seamless — FR-RND-10).
     vec2  isz = vec2(textureSize(u_band_r, 0));
     vec2  innerSz = (u_inner.zw == vec2(0.0)) ? isz : u_inner.zw;
@@ -182,6 +203,12 @@ uniform vec4 u_nodata_color;
 uniform float u_bleed_guard;   // 1 = bilinear filtering active → run 2×2 guard
 uniform int   u_resample;      // 0 bilinear, 1 bicubic2 (B-spline), 2 bicubic4 (Catmull-Rom)
 uniform vec4  u_inner;         // inner rect (x,y,w,h) in texels within the aproned tile texture; (0,0,0,0)=whole texture
+uniform int   u_filter_mode;   // 0=None, 1=Checkerboard, 2=VertSwipe, 3=HorizSwipe
+uniform int   u_filter_role;   // 0=Normal, 1=Top Layer, 2=Background Layer
+uniform float u_check_size;
+uniform float u_swipe_pos;
+uniform float u_viewport_width;
+uniform float u_viewport_height;
 in vec2 v_uv; out vec4 frag_color;
 
 #define EMIT_NODATA { if (u_nodata_color.a < 0.01) discard; frag_color = u_nodata_color; return; }
@@ -267,6 +294,21 @@ bool footprintBad(sampler2D t, vec2 uv) {
 }
 
 void main() {
+    if (u_filter_mode == 1) {
+        ivec2 p = ivec2(gl_FragCoord.x, gl_FragCoord.y) / max(int(u_check_size), 1);
+        bool is_even = ((p.x + p.y) % 2) == 0;
+        if (u_filter_role == 1 && !is_even) discard;
+        if (u_filter_role == 2 && is_even) discard;
+    } else if (u_filter_mode == 2) {
+        float normX = gl_FragCoord.x / max(u_viewport_width, 1.0);
+        if (u_filter_role == 1 && normX > u_swipe_pos) discard;
+        if (u_filter_role == 2 && normX <= u_swipe_pos) discard;
+    } else if (u_filter_mode == 3) {
+        float normY = (u_viewport_height - gl_FragCoord.y) / max(u_viewport_height, 1.0);
+        if (u_filter_role == 1 && normY > u_swipe_pos) discard;
+        if (u_filter_role == 2 && normY <= u_swipe_pos) discard;
+    }
+
     // Map the quad's v_uv to the inner (logical) tile rect inside the aproned
     // texture, so sampling reads real neighbours at tile edges (seamless — FR-RND-10).
     vec2  isz = vec2(textureSize(u_band, 0));

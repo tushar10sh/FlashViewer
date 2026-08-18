@@ -435,7 +435,9 @@ void TileRenderer::drawTile(QOpenGLFunctions_4_1_Core& gl,
                               const RasterDataset::WarpedView& wv,
                               float opacity,
                               bool use_nearest,
-                              glm::dvec2 camera_center) {
+                              glm::dvec2 camera_center,
+                              const FilterParams& filter,
+                              int filter_role) {
     Extent ext = tileExtentFor(wv, key);
     glm::vec4 tile_ext{
         static_cast<float>(ext.xmin - camera_center.x),
@@ -494,6 +496,12 @@ void TileRenderer::drawTile(QOpenGLFunctions_4_1_Core& gl,
         m_shader_rgb->setUniform(gl, "u_bleed_guard", bleed_guard);
         m_shader_rgb->setUniform(gl, "u_resample",    resample);
         m_shader_rgb->setUniform(gl, "u_inner",       inner_rect);
+        m_shader_rgb->setUniform(gl, "u_filter_mode", filter.filterMode);
+        m_shader_rgb->setUniform(gl, "u_filter_role", filter_role);
+        m_shader_rgb->setUniform(gl, "u_check_size",  filter.checkSize);
+        m_shader_rgb->setUniform(gl, "u_swipe_pos",   filter.swipePos);
+        m_shader_rgb->setUniform(gl, "u_viewport_width",  filter.viewportWidth);
+        m_shader_rgb->setUniform(gl, "u_viewport_height", filter.viewportHeight);
         GLint mag = use_nearest ? GL_NEAREST : GL_LINEAR;
         gl.glActiveTexture(GL_TEXTURE0); gl.glBindTexture(GL_TEXTURE_2D, tile.texture_r);
         gl.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, mag);
@@ -523,6 +531,12 @@ void TileRenderer::drawTile(QOpenGLFunctions_4_1_Core& gl,
         m_shader_gray->setUniform(gl, "u_bleed_guard", bleed_guard);
         m_shader_gray->setUniform(gl, "u_resample",    resample);
         m_shader_gray->setUniform(gl, "u_inner",       inner_rect);
+        m_shader_gray->setUniform(gl, "u_filter_mode", filter.filterMode);
+        m_shader_gray->setUniform(gl, "u_filter_role", filter_role);
+        m_shader_gray->setUniform(gl, "u_check_size",  filter.checkSize);
+        m_shader_gray->setUniform(gl, "u_swipe_pos",   filter.swipePos);
+        m_shader_gray->setUniform(gl, "u_viewport_width",  filter.viewportWidth);
+        m_shader_gray->setUniform(gl, "u_viewport_height", filter.viewportHeight);
         GLuint cm_tex = getOrBuildColormap(gl, layer->colormapId());
         gl.glActiveTexture(GL_TEXTURE0); gl.glBindTexture(GL_TEXTURE_2D, tile.texture_r);
         gl.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, use_nearest ? GL_NEAREST : GL_LINEAR);
@@ -547,7 +561,8 @@ bool TileRenderer::render(QOpenGLFunctions_4_1_Core& gl,
                            const Camera& camera,
                            const std::vector<std::shared_ptr<Layer>>& layers,
                            const std::string& project_wkt,
-                           uint32_t crs_epoch) {
+                           uint32_t crs_epoch,
+                           const FilterParams& filter) {
     if (!m_initialized) return true;
 
     ++m_frame_counter;
@@ -559,12 +574,58 @@ bool TileRenderer::render(QOpenGLFunctions_4_1_Core& gl,
     glm::dvec2 cam_c = camera.center();
     bool all_ready = true;
 
+    // Determine the top-most visible raster layer for filter role assignment
+    // (layers.back() / last added layer is top-most on screen)
+    const Layer* topRasterLayer = nullptr;
     for (auto it = layers.rbegin(); it != layers.rend(); ++it) {
+        if ((*it)->visible() && (*it)->type() == LayerType::Raster) {
+            topRasterLayer = (*it).get();
+            break;
+        }
+    }
+
+    // Resolve active filter mode & parameters across all visible layers or canvas filter
+    int activeFilterMode = filter.filterMode;
+    float checkSize = filter.checkSize;
+    float swipePos = filter.swipePos;
+
+    for (auto it = layers.rbegin(); it != layers.rend(); ++it) {
+        if ((*it)->visible() && (*it)->type() == LayerType::Raster) {
+            auto* rl = static_cast<const RasterLayer*>((*it).get());
+            if (rl->displayFilterMode() != RasterLayer::DisplayFilterMode::None) {
+                activeFilterMode = static_cast<int>(rl->displayFilterMode());
+                checkSize = static_cast<float>(rl->displayFilterCheckSize());
+                swipePos = (rl->displayFilterMode() == RasterLayer::DisplayFilterMode::VerticalSwipe)
+                    ? rl->displayFilterSwipeX()
+                    : rl->displayFilterSwipeY();
+                break;
+            }
+        }
+    }
+
+    GLint vp_dims[4]{0, 0, 0, 0};
+    gl.glGetIntegerv(GL_VIEWPORT, vp_dims);
+    float gl_vp_w = static_cast<float>(vp_dims[2]);
+    float gl_vp_h = static_cast<float>(vp_dims[3]);
+
+    // Render layers from bottom (oldest / index 0) to top (newest / index N-1)
+    for (auto it = layers.begin(); it != layers.end(); ++it) {
         const auto& layer_ptr = *it;
         if (!layer_ptr->visible() || layer_ptr->type() != LayerType::Raster) continue;
         auto* rl = static_cast<RasterLayer*>(layer_ptr.get());
         auto* ds = rl->dataset();
         if (!ds) continue;
+
+        int filter_role = 0;
+        FilterParams layerFilter;
+        if (activeFilterMode != 0) {
+            filter_role = (layer_ptr.get() == topRasterLayer) ? 1 : 2;
+            layerFilter.filterMode = activeFilterMode;
+            layerFilter.checkSize = checkSize;
+            layerFilter.swipePos = swipePos;
+            layerFilter.viewportWidth = gl_vp_w;
+            layerFilter.viewportHeight = gl_vp_h;
+        }
 
         // On-the-fly reprojection view into the pane's Project CRS (FR-CRS-1). Warp
         // resampling is data-aware (categorical/integer → nearest, continuous → bilinear,
@@ -614,14 +675,14 @@ bool TileRenderer::render(QOpenGLFunctions_4_1_Core& gl,
                     auto ft = m_cache.get(fallback);
                     if (ft && ft->state == TileState::Ready) {
                         m_cache.touch(fallback, m_frame_counter);
-                        drawTile(gl, fallback, *ft, vp, rl, wv, layer_ptr->opacity(), use_nearest, cam_c);
+                        drawTile(gl, fallback, *ft, vp, rl, wv, layer_ptr->opacity(), use_nearest, cam_c, layerFilter, filter_role);
                         break;
                     }
                 }
             } else {
                 auto tile = m_cache.get(key);
                 if (tile && tile->state == TileState::Ready) {
-                    drawTile(gl, key, *tile, vp, rl, wv, layer_ptr->opacity(), use_nearest, cam_c);
+                    drawTile(gl, key, *tile, vp, rl, wv, layer_ptr->opacity(), use_nearest, cam_c, layerFilter, filter_role);
                     // Keep repaint timer going while refresh is in progress
                     if (tile->refreshing.load(std::memory_order_acquire))
                         all_ready = false;

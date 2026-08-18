@@ -59,6 +59,14 @@ inline FvStretch fvTileDrawStretch(bool stale, float tile_lo, float tile_hi,
     return stale ? FvStretch{tile_lo, tile_hi} : FvStretch{live_lo, live_hi};
 }
 
+struct FilterParams {
+    int filterMode{0};    // 0=None, 1=Checkerboard, 2=VertSwipe, 3=HorizSwipe
+    float checkSize{64.0f};
+    float swipePos{0.5f};
+    float viewportWidth{1.0f};
+    float viewportHeight{1.0f};
+};
+
 // GPU-accelerated tile renderer with async LOD loading.
 // Phase 2 single-texture is replaced here with a proper tile/LOD system.
 class TileRenderer {
@@ -78,7 +86,8 @@ public:
                 const Camera& camera,
                 const std::vector<std::shared_ptr<Layer>>& layers,
                 const std::string& project_wkt = {},
-                uint32_t crs_epoch = 0);
+                uint32_t crs_epoch = 0,
+                const FilterParams& filter = {});
 
     // Per-layer reprojection status callback (Phase 11): invoked during render() for each
     // visible raster layer with (layer_id, reprojecting, native_fallback) so the canvas can
@@ -136,7 +145,9 @@ private:
                   const RasterDataset::WarpedView& wv,
                   float opacity,
                   bool use_nearest = false,
-                  glm::dvec2 camera_center = {0.0, 0.0});
+                  glm::dvec2 camera_center = {0.0, 0.0},
+                  const FilterParams& filter = {},
+                  int filter_role = 0);
 
     // Upload a single-channel float buffer to a GL_R32F texture
     void uploadTex2D(QOpenGLFunctions_4_1_Core& gl,

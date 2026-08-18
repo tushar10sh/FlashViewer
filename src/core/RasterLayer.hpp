@@ -69,6 +69,20 @@ public:
     DisplayResampling displayResampling() const { return m_resampling; }
     void  setDisplayResampling(DisplayResampling r) { m_resampling = r; }
 
+    // Per-layer Display Filter (Checkerboard, Vertical Swipe, Horizontal Swipe)
+    enum class DisplayFilterMode { None = 0, Checkerboard = 1, VerticalSwipe = 2, HorizontalSwipe = 3 };
+    DisplayFilterMode displayFilterMode() const { return m_filter_mode; }
+    void setDisplayFilterMode(DisplayFilterMode m) { m_filter_mode = m; }
+
+    int displayFilterCheckSize() const { return m_filter_check_size; }
+    void setDisplayFilterCheckSize(int sz) { m_filter_check_size = (sz < 4 ? 4 : sz); }
+
+    float displayFilterSwipeX() const { return m_filter_swipe_x; }
+    void setDisplayFilterSwipeX(float x) { m_filter_swipe_x = std::clamp(x, 0.0f, 1.0f); }
+
+    float displayFilterSwipeY() const { return m_filter_swipe_y; }
+    void setDisplayFilterSwipeY(float y) { m_filter_swipe_y = std::clamp(y, 0.0f, 1.0f); }
+
     bool   hasNoData()    const;
     float  noDataValue()  const;
 
@@ -147,6 +161,10 @@ private:
     int         m_colormap_id{0};
     bool        m_colormap_invert{false};
     DisplayResampling m_resampling{DisplayResampling::Bilinear};
+    DisplayFilterMode m_filter_mode{DisplayFilterMode::None};
+    int               m_filter_check_size{64};
+    float             m_filter_swipe_x{0.5f};
+    float             m_filter_swipe_y{0.5f};
 
     bool    m_nodata_override{false};
     float   m_nodata_override_value{0.0f};
