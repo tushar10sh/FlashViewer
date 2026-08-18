@@ -13,6 +13,7 @@
 #include <QPushButton>
 #include <QFileInfo>
 #include <QFont>
+#include <QFontDatabase>
 #include <fstream>
 #include <sstream>
 #include <iomanip>
@@ -79,8 +80,7 @@ void BinaryImportDialog::setupUi(const QString& /*file_path*/) {
     auto* hexBox = fvMakeSection(tr("File Preview (first 256 bytes)"), hexLay, this);
     m_hex_preview = new QTextEdit(hexBox);
     m_hex_preview->setReadOnly(true);
-    QFont mono("Monospace");
-    mono.setStyleHint(QFont::TypeWriter);
+    QFont mono = QFontDatabase::systemFont(QFontDatabase::FixedFont);
     mono.setPointSize(8);
     m_hex_preview->setFont(mono);
     m_hex_preview->setFixedHeight(120);

@@ -47,7 +47,10 @@ void ScaleBar::update(const Camera& camera, bool is_geographic) {
     m_valid = true;
     {
         constexpr int kPad = 8;
-        QFontMetrics fm(QFont("Sans", 8, QFont::Bold));
+        QFont f = this->font();
+        f.setPointSize(8);
+        f.setBold(true);
+        QFontMetrics fm(f);
         int contentW = std::max(static_cast<int>(m_scale_px),
                                 fm.horizontalAdvance(m_scale_label));
         setFixedWidth(2 * kPad + contentW);
@@ -64,7 +67,9 @@ void ScaleBar::paintEvent(QPaintEvent*) {
     const int kBarH = 8;   // tick height
     const int kGap  = 3;   // gap between ruler bottom and text top
 
-    QFont font("Sans", 8, QFont::Bold);
+    QFont font = this->font();
+    font.setPointSize(8);
+    font.setBold(true);
     p.setFont(font);
     QFontMetrics fm(font);
 

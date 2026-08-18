@@ -8,6 +8,8 @@
 #include "gis/CrsUtil.hpp"
 #include "gis/WarpResampling.hpp"
 #include "core/RasterLayer.hpp"
+#include "core/VectorLayer.hpp"
+#include "render/VectorRenderer.hpp"
 #include "util/Logger.hpp"
 #include "util/ErrorReporter.hpp"
 #include "util/PerfMetrics.hpp"
@@ -26,6 +28,7 @@
 #include <QPainter>
 #include <QApplication>
 #include <QFont>
+#include <QFontDatabase>
 #include <QFontMetrics>
 #include <QStringList>
 
@@ -105,6 +108,7 @@ MapCanvas::MapCanvas(LayerManager* layers, uint64_t paneId, QWidget* parent)
     , m_pane_id(paneId)
     , m_tile_renderer(std::make_unique<TileRenderer>())
     , m_osm_renderer(std::make_unique<OsmTileRenderer>(this, this))
+    , m_vector_renderer(std::make_unique<VectorRenderer>())
     , m_cm_legend(new ColormapLegend(this))
     , m_highlight_overlay(new PixelHighlightOverlay(this))
     , m_chrome(new PaneChrome(this))
@@ -455,6 +459,12 @@ void MapCanvas::paintGL() {
         any_missing = !m_tile_renderer->render(*this, m_camera, pane_layers,
                                                m_project_wkt, m_crs_epoch);
 
+    // Vector layer overlay drawn on top of imagery
+    if (m_vector_renderer && !pane_layers.empty()) {
+        QPainter p(this);
+        m_vector_renderer->render(p, m_camera, pane_layers, m_project_wkt);
+    }
+
     // FR-RND-7: keep refreshing while tiles load, but stop once they are all
     // ready OR a bounded timeout (kRepaintBudgetMs ≤ 30 s) elapses — a layer
     // that never finishes loading must not repaint forever.
@@ -559,9 +569,8 @@ void MapCanvas::drawPerfHud() {
 
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing, true);
-    QFont f = p.font();
-    f.setPointSizeF(f.pointSizeF() * 0.9);
-    f.setStyleHint(QFont::Monospace);
+    QFont f = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+    f.setPointSizeF(p.font().pointSizeF() * 0.9);
     p.setFont(f);
     const QFontMetrics fm(f);
     int tw = 0;
@@ -867,22 +876,24 @@ void MapCanvas::fitToLayers() {
 
     Extent combined = Extent::invalid();
     for (const auto& l : pane_layers) {
-        if (l->type() != LayerType::Raster) continue;
-        auto* rl = static_cast<RasterLayer*>(l.get());
-        // Fit in the PANE's Project CRS. Use the layer's extent as seen AFTER on-the-fly
-        // reprojection (warpedView), not its native extent — otherwise a layer whose source
-        // CRS differs from the pane (e.g. a UTM raster dropped into a 4326 pane) would park
-        // the camera at the layer's *native* coordinates while the pane renders in another
-        // CRS, leaving the reprojected layer off-screen and forward-projecting bogus cursor
-        // coordinates into the source CRS (→ "utm: Invalid latitude", Phase 17 #4). When the
-        // warp fails the layer is drawn UNWARPED at its native extent (native-CRS fallback),
-        // so fitting to the native extent is exactly where it is drawn.
-        Extent e = rl->extent();
-        if (auto* ds = rl->dataset()) {
-            auto wv = ds->warpedView(m_project_wkt);
-            if (!wv.failed && wv.extent.isValid()) e = wv.extent;
+        if (!l || !l->visible()) continue;
+        if (l->type() == LayerType::Raster) {
+            auto* rl = static_cast<RasterLayer*>(l.get());
+            Extent e = rl->extent();
+            if (auto* ds = rl->dataset()) {
+                auto wv = ds->warpedView(m_project_wkt);
+                if (!wv.failed && wv.extent.isValid()) e = wv.extent;
+            }
+            combined = combined.isValid() ? combined.united(e) : e;
+        } else if (l->type() == LayerType::Vector) {
+            auto* vl = static_cast<VectorLayer*>(l.get());
+            if (vl->dataset()) {
+                auto geoms = vl->dataset()->geometriesForCrs(m_project_wkt);
+                if (geoms && geoms->extent.isValid()) {
+                    combined = combined.isValid() ? combined.united(geoms->extent) : geoms->extent;
+                }
+            }
         }
-        combined = combined.isValid() ? combined.united(e) : e;
     }
     if (combined.isValid()) {
         m_camera.setViewportSize(width(), height());

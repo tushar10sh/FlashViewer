@@ -22,6 +22,7 @@
 #include "io/UrlGuard.hpp"
 #include <QProgressDialog>
 #include <QMessageBox>
+#include <QFontDatabase>
 #include "util/Logger.hpp"
 #include "util/ErrorReporter.hpp"
 #include "util/TempFile.hpp"
@@ -37,6 +38,10 @@
 #include "panels/RasterInfoPanel.hpp"
 #include "panels/NoDataWidget.hpp"
 #include "panels/NumericDumpPanel.hpp"
+#include "panels/VectorLayerPanel.hpp"
+#include "core/VectorLayer.hpp"
+#include "io/VectorDataset.hpp"
+#include "app/SettingsDialog.hpp"
 #include "gis/AttributeInspector.hpp"
 #include "gis/CrsUtil.hpp"
 #include "gis/CrsPickerDialog.hpp"
@@ -663,12 +668,43 @@ void MainWindow::setupMenuBar() {
     auto* actOpen = fileMenu->addAction(tr("&Open…"));
     actOpen->setShortcut(QKeySequence::Open);
     connect(actOpen, &QAction::triggered, this, [this] {
+        QString filter = tr("All Supported Datasets (*.tif *.tiff *.nc *.h5 *.hdf5 *.png *.jpg *.jpeg *.webp *.vrt *.bin *.shp *.SHP);;Raster Images (*.tif *.tiff *.nc *.h5 *.hdf5 *.png *.jpg *.jpeg *.webp *.vrt *.bin);;ESRI Shapefiles (*.shp *.SHP);;All Files (*.*)");
+        QStringList files = QFileDialog::getOpenFileNames(
+            this, tr("Open Dataset (Raster or Vector)"), QString(), filter);
+        if (files.isEmpty()) return;
+        QStringList rasterFiles, vectorFiles;
+        for (const auto& f : files) {
+            if (f.endsWith(".shp", Qt::CaseInsensitive)) {
+                vectorFiles << f;
+            } else {
+                rasterFiles << f;
+            }
+        }
+        if (!rasterFiles.isEmpty())
+            ErrorReporter::runGuarded("Open", [&] { openFiles(rasterFiles); });
+        if (!vectorFiles.isEmpty())
+            ErrorReporter::runGuarded("Open Vector", [&] { openVectorFiles(vectorFiles); });
+    });
+
+    auto* actOpenRaster = fileMenu->addAction(tr("Open &Raster Dataset…"));
+    connect(actOpenRaster, &QAction::triggered, this, [this] {
         QStringList files = QFileDialog::getOpenFileNames(
             this, tr("Open Raster"),
             QString(),
             QString::fromUtf8(DatasetFactory::openFilter()));
         if (!files.isEmpty())
             ErrorReporter::runGuarded("Open", [&] { openFiles(files); });
+    });
+
+    auto* actOpenVector = fileMenu->addAction(tr("Open &Vector Layer (SHP)…"));
+    actOpenVector->setShortcut(QKeySequence("Ctrl+Shift+V"));
+    connect(actOpenVector, &QAction::triggered, this, [this] {
+        QStringList files = QFileDialog::getOpenFileNames(
+            this, tr("Open Vector Layer (ESRI Shapefile)"),
+            QString(),
+            tr("ESRI Shapefiles (*.shp *.SHP);;All Files (*.*)"));
+        if (!files.isEmpty())
+            openVectorFiles(files);
     });
 
     auto* actOpenUrl = fileMenu->addAction(tr("Open &URL (COG)…"));
@@ -773,18 +809,7 @@ void MainWindow::setupMenuBar() {
     auto* actOsm = viewMenu->addAction(tr("&OSM Basemap"));
     actOsm->setCheckable(true);
     actOsm->setChecked(m_canvas->osmRenderer()->isEnabled());
-    connect(actOsm, &QAction::toggled, this, [this](bool on) {
-        // The basemap is an app-wide toggle: apply to every pane (Phase 6).
-        for (int i = 0; i < m_pane_layout->paneCount(); ++i) {
-            auto* c = m_pane_layout->paneCanvas(i);
-            if (!c) continue;
-            c->osmRenderer()->setEnabled(on);
-            // Turning the basemap on with a pane that has no layers: show the world.
-            if (on && c->paneId() && m_layer_mgr->count() == 0)
-                c->resetToWorldView();
-            c->update();
-        }
-    });
+    connect(actOsm, &QAction::toggled, this, &MainWindow::setOsmBasemapEnabled);
 
     // ---- Performance HUD (FR-APP-14, Phase 12) ----
     // App-wide overlay of live frame stats / open-latency / stalls / VRAM, mirroring
@@ -927,6 +952,38 @@ void MainWindow::setupMenuBar() {
             m_profile_panel->showLayerPlot(m_layer_mgr->activeIndex());
     });
 
+    toolsMenu->addSeparator();
+
+    auto* actToolsSettings = toolsMenu->addAction(tr("&Preferences / Settings…"));
+    actToolsSettings->setMenuRole(QAction::NoRole);
+    actToolsSettings->setShortcut(QKeySequence("Ctrl+,"));
+    connect(actToolsSettings, &QAction::triggered, this, &MainWindow::showSettingsDialog);
+
+    // ---- Settings ----
+    auto* settingsMenu = menuBar()->addMenu(tr("&Settings"));
+    auto* actPrefs = settingsMenu->addAction(tr("&Preferences / Settings…"));
+    actPrefs->setMenuRole(QAction::NoRole);
+    actPrefs->setShortcut(QKeySequence("Ctrl+,"));
+    connect(actPrefs, &QAction::triggered, this, &MainWindow::showSettingsDialog);
+
+    settingsMenu->addSeparator();
+
+    auto* settsThemeMenu = settingsMenu->addMenu(tr("&Theme"));
+    auto* actSettsLight = settsThemeMenu->addAction(tr("&Light"));
+    auto* actSettsDark  = settsThemeMenu->addAction(tr("&Dark"));
+    if (auto* app = qobject_cast<Application*>(qApp)) {
+        actSettsLight->setCheckable(true);
+        actSettsDark->setCheckable(true);
+        actSettsDark->setChecked(app->currentTheme() == Theme::Dark);
+        actSettsLight->setChecked(app->currentTheme() == Theme::Light);
+        connect(actSettsLight, &QAction::triggered, this, [app]{ app->applyTheme(Theme::Light); });
+        connect(actSettsDark,  &QAction::triggered, this, [app]{ app->applyTheme(Theme::Dark);  });
+        connect(app, &Application::themeChanged, this, [actSettsLight, actSettsDark](Theme t) {
+            actSettsDark->setChecked(t == Theme::Dark);
+            actSettsLight->setChecked(t == Theme::Light);
+        });
+    }
+
     // ---- Help ----
     auto* helpMenu = menuBar()->addMenu(tr("&Help"));
     auto* actGpu = helpMenu->addAction(tr("&GPU Information…"));
@@ -960,15 +1017,40 @@ void MainWindow::setupToolBar() {
     toolbar->setMovable(false);
 
     auto* actOpen = new QAction(tr("Open"), this);
+    actOpen->setToolTip(tr("Open raster imagery or vector dataset (Ctrl+O)"));
     actOpen->setShortcut(QKeySequence::Open);
     connect(actOpen, &QAction::triggered, this, [this] {
+        QString filter = tr("All Supported Datasets (*.tif *.tiff *.nc *.h5 *.hdf5 *.png *.jpg *.jpeg *.webp *.vrt *.bin *.shp *.SHP);;Raster Images (*.tif *.tiff *.nc *.h5 *.hdf5 *.png *.jpg *.jpeg *.webp *.vrt *.bin);;ESRI Shapefiles (*.shp *.SHP);;All Files (*.*)");
         QStringList files = QFileDialog::getOpenFileNames(
-            this, tr("Open Raster"), {},
-            QString::fromUtf8(DatasetFactory::openFilter()));
-        if (!files.isEmpty())
-            ErrorReporter::runGuarded("Open", [&] { openFiles(files); });
+            this, tr("Open Dataset (Raster or Vector)"), QString(), filter);
+        if (files.isEmpty()) return;
+        QStringList rasterFiles, vectorFiles;
+        for (const auto& f : files) {
+            if (f.endsWith(".shp", Qt::CaseInsensitive)) {
+                vectorFiles << f;
+            } else {
+                rasterFiles << f;
+            }
+        }
+        if (!rasterFiles.isEmpty())
+            ErrorReporter::runGuarded("Open", [&] { openFiles(rasterFiles); });
+        if (!vectorFiles.isEmpty())
+            ErrorReporter::runGuarded("Open Vector", [&] { openVectorFiles(vectorFiles); });
     });
     toolbar->addAction(actOpen);
+
+    auto* actOpenVector = new QAction(tr("Open Vector"), this);
+    actOpenVector->setToolTip(tr("Open ESRI Shapefile vector overlay (.shp) (Ctrl+Shift+V)"));
+    actOpenVector->setShortcut(QKeySequence("Ctrl+Shift+V"));
+    connect(actOpenVector, &QAction::triggered, this, [this] {
+        QStringList files = QFileDialog::getOpenFileNames(
+            this, tr("Open Vector Layer (ESRI Shapefile)"),
+            QString(),
+            tr("ESRI Shapefiles (*.shp *.SHP);;All Files (*.*)"));
+        if (!files.isEmpty())
+            openVectorFiles(files);
+    });
+    toolbar->addAction(actOpenVector);
 
     toolbar->addSeparator();
 
@@ -982,13 +1064,27 @@ void MainWindow::setupToolBar() {
     actFitAct->setToolTip(tr("Fit view to active layer (F)"));
     connect(actFitAct, &QAction::triggered, this, [this] {
         auto active = m_layer_mgr->activeLayer();
-        if (!active || active->type() != LayerType::Raster) { m_canvas->fitToLayers(); return; }
-        auto ext = static_cast<RasterLayer*>(active.get())->extent();
-        if (!ext.isValid()) { m_canvas->fitToLayers(); return; }
-        Camera cam = m_canvas->camera();
-        cam.fitToExtent(ext);
-        m_canvas->setCamera(cam);
-        m_canvas->update();
+        if (!active) { m_canvas->fitToLayers(); return; }
+        if (active->type() == LayerType::Raster) {
+            auto ext = static_cast<RasterLayer*>(active.get())->extent();
+            if (ext.isValid()) {
+                Camera cam = m_canvas->camera();
+                cam.fitToExtent(ext);
+                m_canvas->setCamera(cam);
+                m_canvas->update();
+                return;
+            }
+        } else if (active->type() == LayerType::Vector) {
+            auto ext = static_cast<VectorLayer*>(active.get())->extent();
+            if (ext.isValid()) {
+                Camera cam = m_canvas->camera();
+                cam.fitToExtent(ext);
+                m_canvas->setCamera(cam);
+                m_canvas->update();
+                return;
+            }
+        }
+        m_canvas->fitToLayers();
     });
     toolbar->addAction(actFitAct);
 
@@ -1025,6 +1121,12 @@ void MainWindow::setupToolBar() {
     actShot->setShortcut(QKeySequence("Ctrl+Shift+S"));
     connect(actShot, &QAction::triggered, this, &MainWindow::captureScreenshot);
     toolbar->addAction(actShot);
+
+    toolbar->addSeparator();
+    auto* actSettings = new QAction(tr("Settings"), this);
+    actSettings->setToolTip(tr("Open Preferences / Settings Dialog (Ctrl+,)"));
+    connect(actSettings, &QAction::triggered, this, &MainWindow::showSettingsDialog);
+    toolbar->addAction(actSettings);
 }
 
 void MainWindow::setupDocks() {
@@ -1133,7 +1235,52 @@ void MainWindow::setupDocks() {
     histoDock->setWidget(m_histo_panel);
     addDockWidget(Qt::LeftDockWidgetArea, histoDock);
 
+    auto* vectorDock = new QDockWidget(tr("Vector Configurator"), this);
+    vectorDock->setObjectName("VectorConfigDock");
+    vectorDock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
+    m_vector_panel = new VectorLayerPanel(vectorDock);
+    m_vector_panel->setLayerManager(m_layer_mgr);
+    m_vector_panel->setPaneListResolver([this] {
+        std::vector<std::pair<quint64, QString>> v;
+        for (int i = 0; i < m_pane_layout->paneCount(); ++i)
+            v.emplace_back(m_pane_layout->paneId(i), m_pane_layout->paneLabel(i));
+        return v;
+    });
+    vectorDock->setWidget(m_vector_panel);
+    addDockWidget(Qt::LeftDockWidgetArea, vectorDock);
+
     tabifyDockWidget(propDock, histoDock);
+    tabifyDockWidget(histoDock, vectorDock);
+
+    connect(m_vector_panel, &VectorLayerPanel::duplicateLayerRequested, this, [this](VectorLayer*, uint64_t) {
+        if (m_canvas) m_canvas->update();
+        if (m_layer_panel) m_layer_panel->refreshPanes();
+    });
+
+    connect(m_vector_panel, &VectorLayerPanel::openVectorRequested, this, [this] {
+        QStringList files = QFileDialog::getOpenFileNames(
+            this, tr("Open Vector Layer (ESRI Shapefile)"),
+            QString(),
+            tr("ESRI Shapefiles (*.shp *.SHP);;All Files (*.*)"));
+        if (!files.isEmpty())
+            openVectorFiles(files);
+    });
+    connect(m_vector_panel, &VectorLayerPanel::fitToLayerRequested, this, [this](int idx) {
+        auto layerPtr = m_layer_mgr->layerAt(idx);
+        if (!layerPtr) return;
+        if (layerPtr->type() == LayerType::Vector) {
+            auto* vl = static_cast<VectorLayer*>(layerPtr.get());
+            Extent ext = vl->extent();
+            if (!ext.isValid()) return;
+            Camera cam = m_canvas->camera();
+            cam.fitToExtent(ext);
+            m_canvas->setCamera(cam);
+            m_canvas->update();
+        }
+    });
+    connect(m_vector_panel, &VectorLayerPanel::layerStyleChanged, this, [this](VectorLayer*) {
+        if (m_canvas) m_canvas->update();
+    });
 
     auto* logDock = new QDockWidget(tr("Log"), this);
     logDock->setObjectName("LogDock");
@@ -1156,6 +1303,7 @@ void MainWindow::setupDocks() {
         if (m_log_widget) m_log_widget->clear();
     });
     m_log_widget = new QPlainTextEdit(logContainer);
+    m_log_widget->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
     m_log_widget->setReadOnly(true);
     m_log_widget->setMaximumBlockCount(5000);
     m_log_widget->setObjectName("LogWidget");
@@ -1727,6 +1875,71 @@ void MainWindow::assignLayerToPane(int layerIndex, uint64_t paneId) {
     auto l = m_layer_mgr->layerAt(layerIndex);
     if (!l || l->paneId() == paneId) return;
 
+    // If moving a vector layer to a new pane, convert to target pane's dataset CRS
+    if (l->type() == LayerType::Vector) {
+        auto* vl = static_cast<VectorLayer*>(l.get());
+        if (paneId > 0 && vl->dataset()) {
+            MapCanvas* target = nullptr;
+            QString targetLabel = tr("Pane %1").arg(paneId);
+            for (int i = 0; i < m_pane_layout->paneCount(); ++i) {
+                if (m_pane_layout->paneId(i) == paneId) {
+                    target = m_pane_layout->paneCanvas(i);
+                    targetLabel = m_pane_layout->paneLabel(i);
+                    break;
+                }
+            }
+
+            const std::string targetCrs = target ? target->projectCrsWkt() : std::string();
+            if (!targetCrs.empty() && targetCrs != vl->dataset()->crsWkt() && !vl->dataset()->crsWkt().empty()) {
+                std::string reason;
+                if (!vl->dataset()->canReprojectTo(targetCrs, &reason)) {
+                    QMessageBox::warning(this, tr("CRS Conversion Failed"),
+                        tr("Cannot move vector layer '%1' to %2.\n\n"
+                           "Reason: %3\n\n"
+                           "Vector Layer CRS: %4\n"
+                           "Target Dataset CRS: %5")
+                        .arg(vl->name())
+                        .arg(targetLabel)
+                        .arg(QString::fromStdString(reason))
+                        .arg(fvCrsShortName(vl->dataset()->crsWkt()))
+                        .arg(fvCrsShortName(targetCrs)));
+                    if (m_layer_panel) m_layer_panel->refreshPanes();
+                    return;
+                }
+
+                // Show progress bar during conversion
+                QProgressDialog progress(
+                    tr("Converting vector layer '%1' to %2 CRS (%3)…")
+                        .arg(vl->name())
+                        .arg(targetLabel)
+                        .arg(fvCrsShortName(targetCrs)),
+                    tr("Cancel"), 0, 100, this);
+                progress.setWindowModality(Qt::WindowModal);
+                progress.setMinimumDuration(150);
+                progress.setValue(0);
+
+                std::function<bool(int, int)> progressCb = [&](int cur, int tot) -> bool {
+                    progress.setValue(cur * 100 / std::max(1, tot));
+                    QApplication::processEvents();
+                    return !progress.wasCanceled();
+                };
+
+                auto geoms = vl->dataset()->geometriesForCrs(targetCrs, progressCb);
+
+                if (progress.wasCanceled() || !geoms) {
+                    if (progress.wasCanceled()) {
+                        showErrorBanner(2, tr("Vector layer move canceled."));
+                    } else {
+                        QMessageBox::warning(this, tr("CRS Conversion Failed"),
+                            tr("Vector geometry coordinate conversion failed for '%1'.").arg(vl->name()));
+                    }
+                    if (m_layer_panel) m_layer_panel->refreshPanes();
+                    return;
+                }
+            }
+        }
+    }
+
     // Was the target pane empty? If so, fit it to the newly-assigned layer.
     int targetCount = 0;
     for (int i = 0; i < m_layer_mgr->count(); ++i) {
@@ -1941,11 +2154,22 @@ void MainWindow::dragEnterEvent(QDragEnterEvent* event) {
 }
 
 void MainWindow::dropEvent(QDropEvent* event) {
-    QStringList paths;
-    for (const auto& url : event->mimeData()->urls())
-        if (url.isLocalFile()) paths << url.toLocalFile();
-    if (!paths.isEmpty())
-        ErrorReporter::runGuarded("Drop-open", [&] { openFiles(paths); });
+    QStringList rasterPaths;
+    QStringList vectorPaths;
+    for (const auto& url : event->mimeData()->urls()) {
+        if (url.isLocalFile()) {
+            QString fn = url.toLocalFile();
+            if (fn.endsWith(".shp", Qt::CaseInsensitive)) {
+                vectorPaths << fn;
+            } else {
+                rasterPaths << fn;
+            }
+        }
+    }
+    if (!rasterPaths.isEmpty())
+        ErrorReporter::runGuarded("Drop-open Raster", [&] { openFiles(rasterPaths); });
+    if (!vectorPaths.isEmpty())
+        ErrorReporter::runGuarded("Drop-open Vector", [&] { openVectorFiles(vectorPaths); });
 }
 
 void MainWindow::onThemeChanged(Theme t) {
@@ -2210,6 +2434,9 @@ void MainWindow::onActiveLayerChanged(int index) {
     RasterLayer* rl = nullptr;
     if (layerPtr && layerPtr->type() == LayerType::Raster)
         rl = static_cast<RasterLayer*>(layerPtr.get());
+    else if (layerPtr && layerPtr->type() == LayerType::Vector && m_vector_panel)
+        m_vector_panel->configureFor(static_cast<VectorLayer*>(layerPtr.get()));
+
     // Phase 18 #8: a multi-selection has no single subject — the per-layer property widgets
     // show the same empty state as with no image loaded.
     if (m_multi_select) rl = nullptr;
@@ -2446,3 +2673,189 @@ void MainWindow::captureScreenshot() {
         QMessageBox::warning(this, tr("Save Failed"),
             tr("Could not save screenshot to:\n%1").arg(path));
 }
+
+void MainWindow::openVectorFiles(const QStringList& paths, uint64_t targetPaneId) {
+    uint64_t pid = (targetPaneId == 0) ? activePaneId() : targetPaneId;
+    MapCanvas* targetCanvas = nullptr;
+    QString targetLabel = tr("Pane %1").arg(pid);
+    for (int i = 0; i < m_pane_layout->paneCount(); ++i) {
+        if (m_pane_layout->paneId(i) == pid) {
+            targetCanvas = m_pane_layout->paneCanvas(i);
+            targetLabel = m_pane_layout->paneLabel(i);
+            break;
+        }
+    }
+
+    const std::string targetCrs = targetCanvas ? targetCanvas->projectCrsWkt() : std::string();
+
+    for (const QString& path : paths) {
+        auto ds = VectorDataset::open(path.toStdString());
+        if (!ds) {
+            QMessageBox::critical(this, tr("Open Vector Failed"),
+                tr("Failed to read ESRI shapefile:\n%1").arg(path));
+            continue;
+        }
+
+        // Always convert vector layer to dataset CRS before rendering if target pane has a dataset CRS
+        if (!targetCrs.empty() && targetCrs != ds->crsWkt() && !ds->crsWkt().empty()) {
+            std::string reason;
+            if (!ds->canReprojectTo(targetCrs, &reason)) {
+                QMessageBox::warning(this, tr("CRS Conversion Failed"),
+                    tr("Cannot load vector layer '%1' into %2.\n\n"
+                       "Reason: %3\n\n"
+                       "Vector Layer CRS: %4\n"
+                       "Target Dataset CRS: %5")
+                    .arg(QFileInfo(path).fileName())
+                    .arg(targetLabel)
+                    .arg(QString::fromStdString(reason))
+                    .arg(fvCrsShortName(ds->crsWkt()))
+                    .arg(fvCrsShortName(targetCrs)));
+                continue;
+            }
+
+            // Convert / pre-project geometries with progress dialog
+            QProgressDialog progress(
+                tr("Converting vector layer '%1' to target CRS (%2)…")
+                    .arg(QFileInfo(path).fileName())
+                    .arg(fvCrsShortName(targetCrs)),
+                tr("Cancel"), 0, 100, this);
+            progress.setWindowModality(Qt::WindowModal);
+            progress.setMinimumDuration(150);
+            progress.setValue(0);
+
+            std::function<bool(int, int)> progressCb = [&](int cur, int tot) -> bool {
+                progress.setValue(cur * 100 / std::max(1, tot));
+                QApplication::processEvents();
+                return !progress.wasCanceled();
+            };
+
+            auto geoms = ds->geometriesForCrs(targetCrs, progressCb);
+
+            if (progress.wasCanceled() || !geoms) {
+                if (progress.wasCanceled()) {
+                    showErrorBanner(2, tr("Vector layer loading canceled by user."));
+                } else {
+                    QMessageBox::warning(this, tr("CRS Conversion Failed"),
+                        tr("Vector geometry coordinate conversion failed for '%1'.").arg(path));
+                }
+                continue;
+            }
+        }
+
+        auto layer = std::make_shared<VectorLayer>(ds);
+        layer->setPaneId(pid);
+        m_layer_mgr->addLayer(layer);
+        FV_INFO("Opened vector layer '{}' in pane {}", path.toStdString(), pid);
+    }
+    if (m_canvas) m_canvas->update();
+}
+
+void MainWindow::setOsmBasemapEnabled(bool on) {
+    const std::string osmCrsWkt = fvGetEpsgWkt(3857);
+    const QString osmCrsName = fvCrsShortName(osmCrsWkt);
+
+    if (on) {
+        showErrorBanner(1, tr("OSM Basemap activated: Pane CRS set to %1 (Web Mercator). Reprojecting vector and raster layers…").arg(osmCrsName));
+
+        for (int i = 0; i < m_pane_layout->paneCount(); ++i) {
+            auto* c = m_pane_layout->paneCanvas(i);
+            if (!c) continue;
+
+            // Remember previous CRS for this pane
+            if (!c->hasPreOsmCrs()) {
+                c->setPreOsmCrs(c->projectCrsWkt());
+            }
+
+            uint64_t pid = c->paneId();
+
+            // Reproject all vector layers on this pane
+            for (int li = 0; li < m_layer_mgr->count(); ++li) {
+                auto l = m_layer_mgr->layerAt(li);
+                if (!l || !fvLayerInPane(*l, pid) || l->type() != LayerType::Vector) continue;
+
+                auto* vl = static_cast<VectorLayer*>(l.get());
+                if (!vl->dataset()) continue;
+
+                if (!vl->dataset()->canReprojectTo(osmCrsWkt)) {
+                    FV_WARN("Vector layer '{}' cannot be reprojected to {}", vl->name().toStdString(), osmCrsName.toStdString());
+                    continue;
+                }
+
+                // Convert with progress bar
+                QProgressDialog progress(
+                    tr("Converting vector layer '%1' to %2…").arg(vl->name(), osmCrsName),
+                    tr("Cancel"), 0, 100, this);
+                progress.setWindowModality(Qt::WindowModal);
+                progress.setMinimumDuration(150);
+                progress.setValue(0);
+
+                std::function<bool(int, int)> progressCb = [&](int cur, int tot) -> bool {
+                    progress.setValue(cur * 100 / std::max(1, tot));
+                    QApplication::processEvents();
+                    return !progress.wasCanceled();
+                };
+
+                vl->dataset()->geometriesForCrs(osmCrsWkt, progressCb);
+            }
+
+            // Set pane project CRS to EPSG:3857 (triggers raster tile reprojection & camera reprojection)
+            c->setProjectCrsWkt(osmCrsWkt, /*userInitiated=*/false);
+            c->osmRenderer()->setEnabled(true);
+
+            if (pid && m_layer_mgr->count() == 0) {
+                c->resetToWorldView();
+            }
+            c->update();
+        }
+    } else {
+        // Revert OSM Basemap
+        for (int i = 0; i < m_pane_layout->paneCount(); ++i) {
+            auto* c = m_pane_layout->paneCanvas(i);
+            if (!c) continue;
+
+            c->osmRenderer()->setEnabled(false);
+
+            if (c->hasPreOsmCrs()) {
+                std::string prevCrs = c->preOsmCrs();
+                c->clearPreOsmCrs();
+                if (!prevCrs.empty()) {
+                    c->setProjectCrsWkt(prevCrs, /*userInitiated=*/false);
+                } else {
+                    c->clearProjectCrsOverride();
+                    c->refreshDerivedProjectCrs();
+                }
+            } else {
+                c->clearProjectCrsOverride();
+                c->refreshDerivedProjectCrs();
+            }
+            c->update();
+        }
+
+        showErrorBanner(1, tr("OSM Basemap removed: Restored previous dataset CRS."));
+    }
+
+    updateProjectCrsStatus();
+    updatePaneLegends();
+    if (m_layer_panel) m_layer_panel->refreshPaneColors();
+}
+
+void MainWindow::showSettingsDialog() {
+    SettingsDialog dlg(this);
+    connect(&dlg, &SettingsDialog::themeChanged, this, [this] {
+        onThemeChanged(Settings::instance().theme());
+    });
+    connect(&dlg, &SettingsDialog::settingsApplied, this, [this] {
+        const QString osmUrl = Settings::instance().osmTileUrl();
+        for (int i = 0; i < m_pane_layout->paneCount(); ++i) {
+            if (auto* c = m_pane_layout->paneCanvas(i)) {
+                if (c->osmRenderer() && c->osmRenderer()->provider()) {
+                    c->osmRenderer()->provider()->setUrlTemplate(osmUrl);
+                }
+                c->update();
+            }
+        }
+        if (m_numeric_dump) m_numeric_dump->update();
+    });
+    dlg.exec();
+}
+

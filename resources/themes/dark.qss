@@ -129,7 +129,6 @@ QPlainTextEdit {
     background-color: #0d1117;
     color: #e6edf3;
     border: 1px solid #30363d;
-    font-family: monospace;
     font-size: 11px;
     selection-background-color: #1f6feb;
     selection-color: #e6edf3;

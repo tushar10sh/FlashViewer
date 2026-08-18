@@ -19,6 +19,7 @@
 #include <vector>
 
 class OsmTileRenderer;
+class VectorRenderer;
 class ColormapLegend;
 class PixelHighlightOverlay;
 class ScaleBar;
@@ -119,6 +120,12 @@ public:
     // FR-CRS-3 default = first layer's CRS; Phase 17 #4 = empty pane adopts a dropped layer).
     void refreshDerivedProjectCrs();
 
+    // Stored Project CRS before OSM Basemap activation for reversibility
+    const std::string& preOsmCrs() const { return m_pre_osm_crs; }
+    void setPreOsmCrs(const std::string& wkt) { m_pre_osm_crs = wkt; m_has_pre_osm_crs = true; }
+    bool hasPreOsmCrs() const { return m_has_pre_osm_crs; }
+    void clearPreOsmCrs() { m_has_pre_osm_crs = false; m_pre_osm_crs.clear(); }
+
     // Colormap legend overlay
     ColormapLegend* colormapLegend() { return m_cm_legend; }
 
@@ -207,6 +214,7 @@ private:
     Camera                           m_camera;
     std::unique_ptr<TileRenderer>    m_tile_renderer;
     std::unique_ptr<OsmTileRenderer> m_osm_renderer;
+    std::unique_ptr<VectorRenderer>  m_vector_renderer;
 
     // Overlay widgets
     ColormapLegend*          m_cm_legend{nullptr};
@@ -283,4 +291,7 @@ private:
     // (layer_id, epoch) pairs already announced to the user, so the on-the-fly
     // reprojection notice fires once per layer per CRS change, not per frame (Phase 11 §7).
     std::set<std::pair<uint64_t, uint32_t>> m_reproject_announced;
+
+    std::string m_pre_osm_crs;
+    bool        m_has_pre_osm_crs{false};
 };

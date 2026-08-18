@@ -33,6 +33,8 @@ class ColormapSelectorWidget;
 class RasterInfoPanel;
 class AttributeInspector;
 class NumericDumpPanel;
+class VectorLayerPanel;
+class PlotWindow;
 class RasterLayer;
 class RasterDataset;
 class SpectralPlotPanel;
@@ -45,6 +47,8 @@ public:
     ~MainWindow() override;
 
     void openFiles(const QStringList& paths);
+    void openVectorFiles(const QStringList& paths, uint64_t targetPaneId = 0);
+    void showSettingsDialog();
 
 public slots:
     void onThemeChanged(Theme t);
@@ -116,6 +120,7 @@ private:
     void       updateProjectCrsStatus();
     // Open the Project-CRS picker for a pane (gear-menu / clickable status label, Phase 11).
     void       openProjectCrsPicker(MapCanvas* canvas);
+    void       setOsmBasemapEnabled(bool on);
     // selectTopLayer: on a pane change, also make the pane's topmost layer active (for a
     // canvas click). Pass false when the activation is driven by a layer selection, so the
     // already-selected layer stays active (Phase 6.3 fix).
@@ -213,6 +218,7 @@ private:
     NoDataWidget*          m_nodata_widget{nullptr};
     AttributeInspector*    m_attr_insp{nullptr};
     NumericDumpPanel*      m_numeric_dump{nullptr};
+    VectorLayerPanel*      m_vector_panel{nullptr};
 
     // View → Display Resampling (FR-RND-10): radio group + the 3 mode actions,
     // kept so onActiveLayerChanged can reflect the active layer's current mode.

@@ -22,6 +22,20 @@ inline QString fvCrsShortName(const std::string& wkt) {
     return nm ? QString::fromUtf8(nm) : QStringLiteral("unknown CRS");
 }
 
+inline std::string fvGetEpsgWkt(int epsgCode) {
+    OGRSpatialReference sr;
+    if (sr.importFromEPSG(epsgCode) == OGRERR_NONE) {
+        char* wkt = nullptr;
+        sr.exportToWkt(&wkt);
+        if (wkt) {
+            std::string result(wkt);
+            CPLFree(wkt);
+            return result;
+        }
+    }
+    return QString("EPSG:%1").arg(epsgCode).toStdString();
+}
+
 // True when two CRS strings denote the same reference system (robust to WKT vs EPSG vs
 // PROJ spelling, axis order, whitespace). Empty compares equal only to empty (both are the
 // geographic/identity case, so no reprojection is needed between them).
