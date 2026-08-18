@@ -47,6 +47,18 @@ glm::mat4 Camera::viewProjMatrix() const {
     return glm::ortho(left, right, bottom, top, -1.0f, 1.0f);
 }
 
+glm::mat4 Camera::relativeViewProjMatrix() const {
+    double half_w = m_vp_w * 0.5 * m_scale;
+    double half_h = m_vp_h * 0.5 * m_scale;
+
+    float left   = static_cast<float>(-half_w);
+    float right  = static_cast<float>(half_w);
+    float bottom = static_cast<float>(-half_h);
+    float top    = static_cast<float>(half_h);
+
+    return glm::ortho(left, right, bottom, top, -1.0f, 1.0f);
+}
+
 Extent Camera::visibleExtent() const {
     double half_w = m_vp_w * 0.5 * m_scale;
     double half_h = m_vp_h * 0.5 * m_scale;

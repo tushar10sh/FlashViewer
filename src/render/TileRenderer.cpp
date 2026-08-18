@@ -427,8 +427,6 @@ bool TileRenderer::ensureTile(QOpenGLFunctions_4_1_Core& gl,
 }
 
 // --------------------------------------------------------------------------
-// Draw
-
 void TileRenderer::drawTile(QOpenGLFunctions_4_1_Core& gl,
                               const TileKey& key,
                               const GpuTile& tile,
@@ -436,11 +434,14 @@ void TileRenderer::drawTile(QOpenGLFunctions_4_1_Core& gl,
                               RasterLayer* layer,
                               const RasterDataset::WarpedView& wv,
                               float opacity,
-                              bool use_nearest) {
+                              bool use_nearest,
+                              glm::dvec2 camera_center) {
     Extent ext = tileExtentFor(wv, key);
     glm::vec4 tile_ext{
-        static_cast<float>(ext.xmin), static_cast<float>(ext.ymin),
-        static_cast<float>(ext.xmax), static_cast<float>(ext.ymax)
+        static_cast<float>(ext.xmin - camera_center.x),
+        static_cast<float>(ext.ymin - camera_center.y),
+        static_cast<float>(ext.xmax - camera_center.x),
+        static_cast<float>(ext.ymax - camera_center.y)
     };
 
     // FR-RND-10 display resampling. At magnification past native (use_nearest) ALL
@@ -554,7 +555,8 @@ bool TileRenderer::render(QOpenGLFunctions_4_1_Core& gl,
 
     flushPendingUploads(gl);
 
-    glm::mat4 vp = camera.viewProjMatrix();
+    glm::mat4 vp = camera.relativeViewProjMatrix();
+    glm::dvec2 cam_c = camera.center();
     bool all_ready = true;
 
     for (auto it = layers.rbegin(); it != layers.rend(); ++it) {
@@ -612,14 +614,14 @@ bool TileRenderer::render(QOpenGLFunctions_4_1_Core& gl,
                     auto ft = m_cache.get(fallback);
                     if (ft && ft->state == TileState::Ready) {
                         m_cache.touch(fallback, m_frame_counter);
-                        drawTile(gl, fallback, *ft, vp, rl, wv, layer_ptr->opacity(), use_nearest);
+                        drawTile(gl, fallback, *ft, vp, rl, wv, layer_ptr->opacity(), use_nearest, cam_c);
                         break;
                     }
                 }
             } else {
                 auto tile = m_cache.get(key);
                 if (tile && tile->state == TileState::Ready) {
-                    drawTile(gl, key, *tile, vp, rl, wv, layer_ptr->opacity(), use_nearest);
+                    drawTile(gl, key, *tile, vp, rl, wv, layer_ptr->opacity(), use_nearest, cam_c);
                     // Keep repaint timer going while refresh is in progress
                     if (tile->refreshing.load(std::memory_order_acquire))
                         all_ready = false;

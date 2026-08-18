@@ -135,7 +135,8 @@ private:
                   RasterLayer* layer,
                   const RasterDataset::WarpedView& wv,
                   float opacity,
-                  bool use_nearest = false);
+                  bool use_nearest = false,
+                  glm::dvec2 camera_center = {0.0, 0.0});
 
     // Upload a single-channel float buffer to a GL_R32F texture
     void uploadTex2D(QOpenGLFunctions_4_1_Core& gl,

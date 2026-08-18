@@ -28,6 +28,10 @@ public:
     // Orthographic projection matrix ready for the vertex shader
     glm::mat4 viewProjMatrix() const;
 
+    // Camera-relative orthographic projection matrix (origin at camera center, eliminating
+    // single-precision floating point jitter on large UTM / projected coordinates)
+    glm::mat4 relativeViewProjMatrix() const;
+
     // Geographic extent currently visible
     Extent visibleExtent() const;
 
