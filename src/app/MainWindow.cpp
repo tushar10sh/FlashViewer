@@ -1321,7 +1321,7 @@ void MainWindow::setupDocks() {
     m_vector_panel = new VectorLayerPanel(vectorDock);
     m_vector_panel->setLayerManager(m_layer_mgr);
     m_vector_panel->setPaneListResolver([this] {
-        std::vector<std::pair<quint64, QString>> v;
+        std::vector<std::pair<uint64_t, QString>> v;
         for (int i = 0; i < m_pane_layout->paneCount(); ++i)
             v.emplace_back(m_pane_layout->paneId(i), m_pane_layout->paneLabel(i));
         return v;

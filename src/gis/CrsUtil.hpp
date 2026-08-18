@@ -7,6 +7,9 @@
 #include <QString>
 #include <cmath>
 #include <string>
+#include <mutex>
+#include <memory>
+#include <unordered_map>
 
 // Short human label for a CRS: "EPSG:32643" when an authority code is present, else the
 // CRS name, else a fallback. Empty input ⇒ "geographic (lon/lat)" (the identity case).
