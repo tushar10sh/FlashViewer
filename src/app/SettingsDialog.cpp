@@ -13,6 +13,9 @@
 #include <QDialogButtonBox>
 #include <QPushButton>
 #include <QLabel>
+#include <QMessageBox>
+#include <QApplication>
+#include "io/OsmTileProvider.hpp"
 
 SettingsDialog::SettingsDialog(QWidget* parent)
     : QDialog(parent)
@@ -110,7 +113,30 @@ void SettingsDialog::setupUi() {
     });
     osmLay->addWidget(btnResetOsm);
 
+    m_btn_test_osm = new QPushButton(tr("Test Connection"), osmRow);
+    m_btn_test_osm->setToolTip(tr("Validate URL format and test live connectivity to tile server"));
+    connect(m_btn_test_osm, &QPushButton::clicked, this, [this] {
+        const QString url = m_txt_osm_url->text().trimmed();
+        m_lbl_osm_status->setText(tr("Testing connection…"));
+        m_lbl_osm_status->setStyleSheet("color: gray; font-size: 11px; font-weight: bold;");
+        QApplication::processEvents();
+
+        auto res = OsmTileProvider::testConnection(url, 4000);
+        if (res.ok) {
+            m_lbl_osm_status->setText(tr("✓ Connection successful (HTTP %1)").arg(res.statusCode));
+            m_lbl_osm_status->setStyleSheet("color: #2ea043; font-size: 11px; font-weight: bold;");
+        } else {
+            m_lbl_osm_status->setText(tr("✗ Connection failed: %1").arg(res.errorString));
+            m_lbl_osm_status->setStyleSheet("color: #da3633; font-size: 11px; font-weight: bold;");
+        }
+    });
+    osmLay->addWidget(m_btn_test_osm);
+
     renderForm->addRow(tr("OSM Tile URL:"), osmRow);
+
+    m_lbl_osm_status = new QLabel(renderTab);
+    m_lbl_osm_status->setStyleSheet("color: gray; font-size: 11px;");
+    renderForm->addRow(QString(), m_lbl_osm_status);
 
     auto* osmHint = new QLabel(
         tr("URL template for map tiles. Standard variables: {z} (zoom), {x} (column), {y} (row).\n"
@@ -128,8 +154,9 @@ void SettingsDialog::setupUi() {
     auto* btnBox = new QDialogButtonBox(
         QDialogButtonBox::Ok | QDialogButtonBox::Apply | QDialogButtonBox::Cancel, this);
     connect(btnBox->button(QDialogButtonBox::Ok), &QPushButton::clicked, this, [this] {
-        applySettings();
-        accept();
+        if (applySettings()) {
+            accept();
+        }
     });
     connect(btnBox->button(QDialogButtonBox::Apply), &QPushButton::clicked, this, &SettingsDialog::applySettings);
     connect(btnBox->button(QDialogButtonBox::Cancel), &QPushButton::clicked, this, &QDialog::reject);
@@ -151,9 +178,10 @@ void SettingsDialog::loadValues() {
     if (resampIdx >= 0) m_combo_resampling->setCurrentIndex(resampIdx);
 
     m_txt_osm_url->setText(s.osmTileUrl());
+    m_lbl_osm_status->setText(QString());
 }
 
-void SettingsDialog::applySettings() {
+bool SettingsDialog::applySettings() {
     auto& s = Settings::instance();
     Theme oldTheme = s.theme();
     Theme newTheme = static_cast<Theme>(m_theme_combo->currentData().toInt());
@@ -166,12 +194,37 @@ void SettingsDialog::applySettings() {
     s.setNumericDumpFontSize(m_spin_dump_font_size->value());
     s.setDisplayResampling(m_combo_resampling->currentData().toInt());
 
-    if (!m_txt_osm_url->text().trimmed().isEmpty()) {
-        s.setOsmTileUrl(m_txt_osm_url->text().trimmed());
+    const QString newOsmUrl = m_txt_osm_url->text().trimmed();
+    if (!newOsmUrl.isEmpty() && newOsmUrl != s.osmTileUrl()) {
+        QString errorReason;
+        if (!OsmTileProvider::validateUrlTemplate(newOsmUrl, &errorReason)) {
+            QMessageBox::warning(this, tr("Invalid OSM Tile URL"),
+                tr("The specified OSM Tile URL format is invalid:\n\n%1").arg(errorReason));
+            return false;
+        }
+
+        m_lbl_osm_status->setText(tr("Validating connection…"));
+        m_lbl_osm_status->setStyleSheet("color: gray; font-size: 11px; font-weight: bold;");
+        QApplication::processEvents();
+
+        auto res = OsmTileProvider::testConnection(newOsmUrl, 4000);
+        if (!res.ok) {
+            m_lbl_osm_status->setText(tr("✗ Connection failed: %1").arg(res.errorString));
+            m_lbl_osm_status->setStyleSheet("color: #da3633; font-size: 11px; font-weight: bold;");
+            QMessageBox::warning(this, tr("OSM Connection Failed"),
+                tr("Could not connect to the OSM tile server:\n%1\n\nError: %2\n\nPlease check the URL or your network connection.")
+                    .arg(newOsmUrl).arg(res.errorString));
+            return false;
+        }
+
+        m_lbl_osm_status->setText(tr("✓ Connection successful (HTTP %1)").arg(res.statusCode));
+        m_lbl_osm_status->setStyleSheet("color: #2ea043; font-size: 11px; font-weight: bold;");
+        s.setOsmTileUrl(newOsmUrl);
     }
 
     if (oldTheme != newTheme) {
         emit themeChanged();
     }
     emit settingsApplied();
+    return true;
 }

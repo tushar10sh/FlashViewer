@@ -25,10 +25,19 @@ template<> struct hash<OsmTileKey> {
 };
 }
 
+struct OsmConnectionResult {
+    bool ok{false};
+    int statusCode{0};
+    QString errorString;
+};
+
 class OsmTileProvider : public QObject {
     Q_OBJECT
 public:
     explicit OsmTileProvider(QObject* parent = nullptr);
+
+    static bool validateUrlTemplate(const QString& url, QString* errorReason = nullptr);
+    static OsmConnectionResult testConnection(const QString& url, int timeoutMs = 5000);
 
     void           setUrlTemplate(const QString& url);
     const QString& urlTemplate() const { return m_url_template; }

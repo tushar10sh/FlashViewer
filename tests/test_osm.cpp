@@ -181,3 +181,44 @@ TEST_CASE("OSM basemap reprojection round-trips into a projected CRS", "[osm][TC
     OGRCoordinateTransformation::DestroyCT(g2p);
     OGRCoordinateTransformation::DestroyCT(p2g);
 }
+
+TEST_CASE("OsmTileProvider validates tile URL templates correctly", "[osm][validation]") {
+    QString reason;
+
+    // Valid templates
+    REQUIRE(OsmTileProvider::validateUrlTemplate("https://tile.openstreetmap.org/{z}/{x}/{y}.png", &reason));
+    REQUIRE(reason.isEmpty());
+
+    REQUIRE(OsmTileProvider::validateUrlTemplate("http://a.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png", &reason));
+    REQUIRE(reason.isEmpty());
+
+    // Empty URL
+    REQUIRE_FALSE(OsmTileProvider::validateUrlTemplate("", &reason));
+    REQUIRE_FALSE(reason.isEmpty());
+
+    // Missing placeholders
+    REQUIRE_FALSE(OsmTileProvider::validateUrlTemplate("https://tile.openstreetmap.org/{x}/{y}.png", &reason));
+    REQUIRE_FALSE(OsmTileProvider::validateUrlTemplate("https://tile.openstreetmap.org/{z}/{y}.png", &reason));
+    REQUIRE_FALSE(OsmTileProvider::validateUrlTemplate("https://tile.openstreetmap.org/{z}/{x}.png", &reason));
+
+    // Invalid schemes
+    REQUIRE_FALSE(OsmTileProvider::validateUrlTemplate("ftp://tile.openstreetmap.org/{z}/{x}/{y}.png", &reason));
+    REQUIRE_FALSE(OsmTileProvider::validateUrlTemplate("file:///path/{z}/{x}/{y}.png", &reason));
+
+    // SSRF blocked addresses
+    REQUIRE_FALSE(OsmTileProvider::validateUrlTemplate("http://127.0.0.1/{z}/{x}/{y}.png", &reason));
+    REQUIRE_FALSE(OsmTileProvider::validateUrlTemplate("http://192.168.1.1/{z}/{x}/{y}.png", &reason));
+    REQUIRE_FALSE(OsmTileProvider::validateUrlTemplate("http://10.0.0.1/{z}/{x}/{y}.png", &reason));
+    REQUIRE_FALSE(OsmTileProvider::validateUrlTemplate("http://169.254.169.254/{z}/{x}/{y}.png", &reason));
+}
+
+TEST_CASE("OsmTileProvider connection test rejects invalid URLs fast", "[osm][connection]") {
+    auto res1 = OsmTileProvider::testConnection("ftp://invalid/{z}/{x}/{y}.png", 100);
+    REQUIRE_FALSE(res1.ok);
+    REQUIRE_FALSE(res1.errorString.isEmpty());
+
+    auto res2 = OsmTileProvider::testConnection("http://127.0.0.1/{z}/{x}/{y}.png", 100);
+    REQUIRE_FALSE(res2.ok);
+    REQUIRE_FALSE(res2.errorString.isEmpty());
+}
+

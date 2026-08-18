@@ -20,6 +20,7 @@
 #include "io/BandStackVrt.hpp"
 #include "io/CloudReader.hpp"
 #include "io/UrlGuard.hpp"
+#include "io/OsmTileProvider.hpp"
 #include <QProgressDialog>
 #include <QMessageBox>
 #include <QFontDatabase>
@@ -2899,6 +2900,24 @@ void MainWindow::setOsmBasemapEnabled(bool on) {
     const QString osmCrsName = fvCrsShortName(osmCrsWkt);
 
     if (on) {
+        // Conduct connection test to the configured OSM tile URL before activating
+        const QString osmUrl = Settings::instance().osmTileUrl();
+        auto testRes = OsmTileProvider::testConnection(osmUrl, 3500);
+        if (!testRes.ok) {
+            QMessageBox::critical(
+                this, tr("OSM Basemap Connection Failed"),
+                tr("Cannot activate OpenStreetMap Basemap:\n\n"
+                   "Failed to connect to tile server at:\n%1\n\n"
+                   "Error: %2\n\n"
+                   "Please check your internet connection or update the tile server URL in Settings (Ctrl+,).")
+                    .arg(osmUrl).arg(testRes.errorString));
+            if (m_act_osm) {
+                QSignalBlocker blocker(m_act_osm);
+                m_act_osm->setChecked(false);
+            }
+            return;
+        }
+
         // When loading/displaying datasets with no CRS, OSM basemap selection should throw an error dialog box
         for (int i = 0; i < m_pane_layout->paneCount(); ++i) {
             auto* c = m_pane_layout->paneCanvas(i);

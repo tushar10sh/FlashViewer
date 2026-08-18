@@ -1,4 +1,5 @@
 #include "io/OsmTileProvider.hpp"
+#include "io/UrlGuard.hpp"
 #include "util/Logger.hpp"
 
 #include <QNetworkRequest>
@@ -6,6 +7,96 @@
 #include <QNetworkDiskCache>
 #include <QStandardPaths>
 #include <QDir>
+#include <QEventLoop>
+#include <QTimer>
+#include <QUrl>
+
+bool OsmTileProvider::validateUrlTemplate(const QString& url, QString* errorReason)
+{
+    QString trimmed = url.trimmed();
+    if (trimmed.isEmpty()) {
+        if (errorReason) *errorReason = tr("URL template cannot be empty.");
+        return false;
+    }
+
+    if (!trimmed.startsWith("http://", Qt::CaseInsensitive) &&
+        !trimmed.startsWith("https://", Qt::CaseInsensitive)) {
+        if (errorReason) *errorReason = tr("URL must start with http:// or https://.");
+        return false;
+    }
+
+    if (!trimmed.contains("{z}") || !trimmed.contains("{x}") || !trimmed.contains("{y}")) {
+        if (errorReason) *errorReason = tr("URL template must contain {z}, {x}, and {y} coordinate placeholders.");
+        return false;
+    }
+
+    // Check sample URL with UrlGuard for SSRF protection
+    QString sampleUrl = trimmed;
+    sampleUrl.replace("{z}", "0").replace("{x}", "0").replace("{y}", "0");
+    UrlGuard::Result guard = UrlGuard::check(sampleUrl.toStdString());
+    if (!guard.ok) {
+        if (errorReason) *errorReason = tr("Security check failed: %1").arg(guard.reason);
+        return false;
+    }
+
+    return true;
+}
+
+OsmConnectionResult OsmTileProvider::testConnection(const QString& url, int timeoutMs)
+{
+    QString errorMsg;
+    if (!validateUrlTemplate(url, &errorMsg)) {
+        return {false, 0, errorMsg};
+    }
+
+    QString sampleUrl = url.trimmed();
+    sampleUrl.replace("{z}", "0").replace("{x}", "0").replace("{y}", "0");
+
+    QNetworkAccessManager nam;
+    QNetworkRequest req((QUrl(sampleUrl)));
+    req.setAttribute(QNetworkRequest::Http2AllowedAttribute, false);
+    req.setRawHeader("User-Agent", "FlashViewer/0.1 (+https://github.com/san-aria/flashviewer)");
+    req.setRawHeader("Accept", "image/png,image/*;q=0.9,*/*;q=0.5");
+    req.setTransferTimeout(timeoutMs);
+
+    QNetworkReply* reply = nam.get(req);
+
+    QEventLoop loop;
+    QTimer timer;
+    timer.setSingleShot(true);
+
+    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    QObject::connect(&timer, &QTimer::timeout, &loop, [&] {
+        reply->abort();
+        loop.quit();
+    });
+
+    timer.start(timeoutMs);
+    loop.exec();
+
+    if (timer.isActive()) {
+        timer.stop();
+    }
+
+    if (reply->error() != QNetworkReply::NoError) {
+        int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        QString err = reply->errorString();
+        reply->deleteLater();
+        if (reply->error() == QNetworkReply::OperationCanceledError) {
+            return {false, 0, tr("Connection timed out after %1 ms").arg(timeoutMs)};
+        }
+        return {false, status, err.isEmpty() ? tr("Network error (code %1)").arg(status) : err};
+    }
+
+    int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    reply->deleteLater();
+
+    if (statusCode >= 200 && statusCode < 400) {
+        return {true, statusCode, QString()};
+    }
+
+    return {false, statusCode, tr("Server returned HTTP %1").arg(statusCode)};
+}
 
 OsmTileProvider::OsmTileProvider(QObject* parent)
     : QObject(parent)

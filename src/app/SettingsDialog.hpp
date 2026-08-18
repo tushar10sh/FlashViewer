@@ -6,6 +6,8 @@ class QComboBox;
 class QSpinBox;
 class QCheckBox;
 class QLineEdit;
+class QLabel;
+class QPushButton;
 
 class SettingsDialog : public QDialog {
     Q_OBJECT
@@ -18,7 +20,7 @@ signals:
     void settingsApplied();
 
 private slots:
-    void applySettings();
+    bool applySettings();
 
 private:
     void setupUi();
@@ -33,4 +35,6 @@ private:
 
     QComboBox*  m_combo_resampling{nullptr};
     QLineEdit*  m_txt_osm_url{nullptr};
+    QLabel*     m_lbl_osm_status{nullptr};
+    QPushButton* m_btn_test_osm{nullptr};
 };
