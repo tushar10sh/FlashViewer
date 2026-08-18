@@ -327,10 +327,10 @@ void LayerTreeWidget::dropEvent(QDropEvent* e) {
     if (onHeader || !target) {
         // Dropping onto a pane header (or past the last row) puts the layer on TOP of that
         // pane's block, so it is immediately visible in the pane.
-        if (group->childCount() > 0) insertBefore = rowLayerIndex(group->child(0));
+        if (group->childCount() > 0) insertBefore = rowLayerIndex(group->child(0)) + 1;
     } else {
         const int t = rowLayerIndex(target);
-        insertBefore = (where == QAbstractItemView::BelowItem) ? t + 1 : t;
+        insertBefore = (where == QAbstractItemView::BelowItem) ? t : t + 1;
     }
 
     // Answer CopyAction, never MoveAction: QAbstractItemView::startDrag() calls
@@ -436,8 +436,8 @@ LayerPanel::LayerPanel(QWidget* parent) : QWidget(parent) {
         const int to = fvPaneNeighbourIndex(m_mgr->layers(), sel.front(), dir);
         if (to >= 0) m_mgr->moveLayer(sel.front(), to);
     };
-    connect(m_btn_up,   &QToolButton::clicked, this, [moveBy] { moveBy(-1); });
-    connect(m_btn_down, &QToolButton::clicked, this, [moveBy] { moveBy(+1); });
+    connect(m_btn_up,   &QToolButton::clicked, this, [moveBy] { moveBy(+1); });
+    connect(m_btn_down, &QToolButton::clicked, this, [moveBy] { moveBy(-1); });
     connect(m_btn_del,  &QToolButton::clicked, this, &LayerPanel::deleteSelection);
 
     connect(m_tree, &QTreeWidget::itemChanged,
@@ -654,8 +654,8 @@ void LayerPanel::rebuildList() {
             btnDown->setSvgPath(":/icons/arrow_down" + sfx + ".svg");
 
             const int layerIdx = i;
-            const bool canUp   = fvPaneNeighbourIndex(m_mgr->layers(), layerIdx, -1) >= 0;
-            const bool canDown = fvPaneNeighbourIndex(m_mgr->layers(), layerIdx, +1) >= 0;
+            const bool canUp   = fvPaneNeighbourIndex(m_mgr->layers(), layerIdx, +1) >= 0;
+            const bool canDown = fvPaneNeighbourIndex(m_mgr->layers(), layerIdx, -1) >= 0;
             btnUp->setEnabled(canUp);
             btnDown->setEnabled(canDown);
             btnUp->setToolTip(tr("Move layer up in stack"));
@@ -663,12 +663,12 @@ void LayerPanel::rebuildList() {
 
             connect(btnUp, &QToolButton::clicked, this, [this, layerIdx] {
                 if (m_updating || !m_mgr) return;
-                int to = fvPaneNeighbourIndex(m_mgr->layers(), layerIdx, -1);
+                int to = fvPaneNeighbourIndex(m_mgr->layers(), layerIdx, +1);
                 if (to >= 0) m_mgr->moveLayer(layerIdx, to);
             });
             connect(btnDown, &QToolButton::clicked, this, [this, layerIdx] {
                 if (m_updating || !m_mgr) return;
-                int to = fvPaneNeighbourIndex(m_mgr->layers(), layerIdx, +1);
+                int to = fvPaneNeighbourIndex(m_mgr->layers(), layerIdx, -1);
                 if (to >= 0) m_mgr->moveLayer(layerIdx, to);
             });
 
@@ -1016,8 +1016,8 @@ void LayerPanel::updateMoveButtons() {
         m_btn_down->setEnabled(false);
         return;
     }
-    m_btn_up->setEnabled(fvPaneNeighbourIndex(m_mgr->layers(), layers.front(), -1) >= 0);
-    m_btn_down->setEnabled(fvPaneNeighbourIndex(m_mgr->layers(), layers.front(), +1) >= 0);
+    m_btn_up->setEnabled(fvPaneNeighbourIndex(m_mgr->layers(), layers.front(), +1) >= 0);
+    m_btn_down->setEnabled(fvPaneNeighbourIndex(m_mgr->layers(), layers.front(), -1) >= 0);
 }
 
 void LayerPanel::onContextMenu(const QPoint& pos) {
