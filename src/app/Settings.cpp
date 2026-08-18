@@ -14,6 +14,7 @@ static constexpr const char* kPerfHudVisible     = "perf/hudVisible";
 static constexpr const char* kCurveColorScheme   = "plots/curveColorScheme";
 static constexpr const char* kPlotGrid           = "plots/grid";
 static constexpr const char* kLegendCoords       = "plots/legendCoords";
+static constexpr const char* kNumericDumpFontSize = "numericDump/fontSize";
 
 Settings::Settings() = default;
 
@@ -101,6 +102,17 @@ bool Settings::legendCoords() const {
 void Settings::setLegendCoords(bool on) {
     QSettings s;
     s.setValue(kLegendCoords, on);
+}
+
+int Settings::numericDumpFontSize() const {
+    QSettings s;
+    int v = s.value(kNumericDumpFontSize, 8).toInt();
+    return (v < 5 || v > 24) ? 8 : v;
+}
+
+void Settings::setNumericDumpFontSize(int pt) {
+    QSettings s;
+    s.setValue(kNumericDumpFontSize, (pt < 5 || pt > 24) ? 8 : pt);
 }
 
 QByteArray Settings::plotWindowGeometry(const QString& key) const {

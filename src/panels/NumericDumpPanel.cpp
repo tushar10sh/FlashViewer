@@ -1,4 +1,5 @@
 #include "panels/NumericDumpPanel.hpp"
+#include "app/Application.hpp"
 #include "core/LayerManager.hpp"
 #include "core/RasterLayer.hpp"
 #include "gis/CrsUtil.hpp"
@@ -9,6 +10,7 @@
 #include <QTableWidget>
 #include <QLabel>
 #include <QComboBox>
+#include <QSpinBox>
 #include <QPushButton>
 #include <QStyledItemDelegate>
 #include <QPainter>
@@ -30,12 +32,11 @@ QString formatPixelVal(double val) {
     if (std::floor(val) == val && std::abs(val) < 1e9) {
         return QString::number(static_cast<long long>(val));
     }
-    if (std::abs(val) >= 0.001 && std::abs(val) < 10000.0) {
-        return QString::number(val, 'f', (std::abs(val) < 1.0 ? 4 : 2));
-    }
     return QString::number(val, 'g', 5);
 }
 } // namespace
+
+#include "app/Settings.hpp"
 
 class NumericDumpDelegate : public QStyledItemDelegate {
 public:
@@ -54,23 +55,27 @@ public:
         int c = index.column();
         bool isCenter = (r == 5 && c == 5);
 
+        // Determine dark theme dynamically from palette lightness
+        bool isDark = (option.palette.base().color().lightness() < 128) ||
+                      (option.palette.window().color().lightness() < 128);
+
         // 1. Draw Cell Background
         QRect rect = option.rect;
         if (isCenter) {
             // Subtle warm highlight for center selected pixel
-            painter->fillRect(rect, QColor(255, 243, 205));
+            painter->fillRect(rect, isDark ? QColor(80, 55, 15, 230) : QColor(255, 243, 205));
         } else if (option.state & QStyle::State_Selected) {
             painter->fillRect(rect, option.palette.highlight());
         } else {
-            painter->fillRect(rect, option.palette.base());
+            painter->fillRect(rect, isDark ? QColor(13, 17, 23) : option.palette.base());
         }
 
         // Cell Border
         if (isCenter) {
-            painter->setPen(QPen(QColor(230, 81, 0), 2)); // Bold orange/amber border for center
+            painter->setPen(QPen(isDark ? QColor(240, 136, 62) : QColor(230, 81, 0), 2)); // Bold amber border for center
             painter->drawRect(rect.adjusted(1, 1, -1, -1));
         } else {
-            painter->setPen(QPen(QColor(225, 225, 225), 1));
+            painter->setPen(QPen(isDark ? QColor(48, 54, 61) : QColor(220, 224, 230), 1));
             painter->drawRect(rect);
         }
 
@@ -81,7 +86,8 @@ public:
         }
 
         QFont font = option.font;
-        font.setPointSize(font.pointSize() > 9 ? font.pointSize() - 1 : 9);
+        int fontSize = Settings::instance().numericDumpFontSize();
+        font.setPointSize(fontSize);
         if (isCenter) {
             font.setBold(true);
         } else {
@@ -89,51 +95,56 @@ public:
         }
         painter->setFont(font);
 
+        // Theme-aware value colors:
+        // Dark theme: light colors (off-white for gray, light bright red, light green, light blue)
+        // Light theme: dark colors (dark black for gray, dark red, dark green, dark blue)
+        const QColor colNa = isDark ? QColor(139, 148, 158) : QColor(140, 140, 140);
+        const QColor colR  = isDark ? QColor(255, 123, 114) : QColor(183, 28, 28);
+        const QColor colG  = isDark ? QColor(126, 231, 135) : QColor(27, 94, 32);
+        const QColor colB  = isDark ? QColor(121, 192, 255) : QColor(13, 71, 161);
+        const QColor colGray = isDark ? QColor(240, 246, 252) : QColor(17, 17, 17);
+
         if (m_sample->is_rgb && m_sample->channels.size() >= 3) {
             const auto& cellR = m_sample->channels[0][static_cast<size_t>(r)][static_cast<size_t>(c)];
             const auto& cellG = m_sample->channels[1][static_cast<size_t>(r)][static_cast<size_t>(c)];
             const auto& cellB = m_sample->channels[2][static_cast<size_t>(r)][static_cast<size_t>(c)];
 
             if (!cellR.is_valid && !cellG.is_valid && !cellB.is_valid) {
-                painter->setPen(QColor(160, 160, 160));
+                painter->setPen(colNa);
                 painter->drawText(rect, Qt::AlignCenter, "N/A");
             } else if (m_mode == ViewChannelMode::Composite) {
                 // Stack 3 values vertically
                 int h3 = rect.height() / 3;
-                QRect rR(rect.x() + 2, rect.y(), rect.width() - 4, h3);
-                QRect rG(rect.x() + 2, rect.y() + h3, rect.width() - 4, h3);
-                QRect rB(rect.x() + 2, rect.y() + 2 * h3, rect.width() - 4, rect.height() - 2 * h3);
+                QRect rR(rect.x() + 1, rect.y(), rect.width() - 2, h3);
+                QRect rG(rect.x() + 1, rect.y() + h3, rect.width() - 2, h3);
+                QRect rB(rect.x() + 1, rect.y() + 2 * h3, rect.width() - 2, rect.height() - 2 * h3);
 
-                // Dark Red
-                painter->setPen(cellR.is_nodata ? QColor(160, 160, 160) : QColor(183, 28, 28));
+                painter->setPen(cellR.is_nodata ? colNa : colR);
                 painter->drawText(rR, Qt::AlignCenter, formatPixelVal(cellR.value));
 
-                // Dark Green
-                painter->setPen(cellG.is_nodata ? QColor(160, 160, 160) : QColor(27, 94, 32));
+                painter->setPen(cellG.is_nodata ? colNa : colG);
                 painter->drawText(rG, Qt::AlignCenter, formatPixelVal(cellG.value));
 
-                // Dark Blue
-                painter->setPen(cellB.is_nodata ? QColor(160, 160, 160) : QColor(13, 71, 161));
+                painter->setPen(cellB.is_nodata ? colNa : colB);
                 painter->drawText(rB, Qt::AlignCenter, formatPixelVal(cellB.value));
             } else if (m_mode == ViewChannelMode::RedOnly) {
-                painter->setPen(cellR.is_nodata ? QColor(160, 160, 160) : QColor(183, 28, 28));
+                painter->setPen(cellR.is_nodata ? colNa : colR);
                 painter->drawText(rect, Qt::AlignCenter, formatPixelVal(cellR.value));
             } else if (m_mode == ViewChannelMode::GreenOnly) {
-                painter->setPen(cellG.is_nodata ? QColor(160, 160, 160) : QColor(27, 94, 32));
+                painter->setPen(cellG.is_nodata ? colNa : colG);
                 painter->drawText(rect, Qt::AlignCenter, formatPixelVal(cellG.value));
             } else if (m_mode == ViewChannelMode::BlueOnly) {
-                painter->setPen(cellB.is_nodata ? QColor(160, 160, 160) : QColor(13, 71, 161));
+                painter->setPen(cellB.is_nodata ? colNa : colB);
                 painter->drawText(rect, Qt::AlignCenter, formatPixelVal(cellB.value));
             }
         } else {
             // Grayscale / single-channel
             const auto& cell = m_sample->channels[0][static_cast<size_t>(r)][static_cast<size_t>(c)];
             if (!cell.is_valid || cell.is_nodata) {
-                painter->setPen(QColor(160, 160, 160));
+                painter->setPen(colNa);
                 painter->drawText(rect, Qt::AlignCenter, "N/A");
             } else {
-                // Black colored text for grayscale imagery
-                painter->setPen(QColor(0, 0, 0));
+                painter->setPen(colGray);
                 painter->drawText(rect, Qt::AlignCenter, formatPixelVal(cell.value));
             }
         }
@@ -175,18 +186,31 @@ void NumericDumpPanel::setupUi() {
     m_copy_btn->setToolTip(tr("Copy the 11x11 numeric matrix to clipboard as TSV/CSV"));
     connect(m_copy_btn, &QPushButton::clicked, this, &NumericDumpPanel::copyToClipboard);
 
+    auto* fontLbl = new QLabel(tr("Font:"), this);
+    auto* fontSpin = new QSpinBox(this);
+    fontSpin->setRange(6, 16);
+    fontSpin->setValue(Settings::instance().numericDumpFontSize());
+    fontSpin->setSuffix(tr(" pt"));
+    fontSpin->setToolTip(tr("Matrix cell font size (configurable in Preferences)"));
+    connect(fontSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int pt) {
+        Settings::instance().setNumericDumpFontSize(pt);
+        m_table->viewport()->update();
+    });
+
     topBar->addWidget(layerLbl);
     topBar->addWidget(m_layer_combo);
     topBar->addWidget(modeLbl);
     topBar->addWidget(m_mode_combo);
+    topBar->addWidget(fontLbl);
+    topBar->addWidget(fontSpin);
     topBar->addWidget(m_copy_btn);
     mainLay->addLayout(topBar);
 
     // 2. Center info / coordinates header
     m_info_label = new QLabel(tr("Center Pixel: Col --, Row --"), this);
-    m_info_label->setStyleSheet("font-weight: bold; color: #1565c0;");
+    m_info_label->setStyleSheet("font-weight: bold; font-size: 12px;");
     m_coord_label = new QLabel(tr("Click on map to inspect 11x11 numeric patch"), this);
-    m_coord_label->setStyleSheet("color: #616161;");
+    m_coord_label->setStyleSheet("color: #888888; font-size: 11px;");
     mainLay->addWidget(m_info_label);
     mainLay->addWidget(m_coord_label);
 
@@ -236,6 +260,15 @@ void NumericDumpPanel::setupUi() {
     m_status_label = new QLabel(tr("Center pixel is highlighted in bold [5, 5]."), this);
     m_status_label->setStyleSheet("color: #757575; font-size: 11px;");
     mainLay->addWidget(m_status_label);
+}
+
+void NumericDumpPanel::changeEvent(QEvent* event) {
+    QWidget::changeEvent(event);
+    if (event->type() == QEvent::PaletteChange || event->type() == QEvent::StyleChange) {
+        if (m_table && m_table->viewport()) {
+            m_table->viewport()->update();
+        }
+    }
 }
 
 void NumericDumpPanel::inspectGroups(double geo_x, double geo_y, const std::string& geoWkt,

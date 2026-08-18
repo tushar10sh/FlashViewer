@@ -54,6 +54,10 @@ public:
     bool legendCoords() const;
     void setLegendCoords(bool on);
 
+    // Numeric Dump matrix font size in points (default 8 pt)
+    int  numericDumpFontSize() const;
+    void setNumericDumpFontSize(int pt);
+
     // Geometry of the two plot WINDOWS (FR-ANL-1/2). They are no longer docks, so
     // QMainWindow::saveState no longer carries them and each saves its own frame.
     QByteArray plotWindowGeometry(const QString& key) const;

@@ -38,6 +38,9 @@ private slots:
     void onViewModeChanged(int index);
     void copyToClipboard();
 
+protected:
+    void changeEvent(QEvent* event) override;
+
 private:
     void updateTable();
     void setupUi();
