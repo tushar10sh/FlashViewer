@@ -327,19 +327,21 @@ void VectorSpatialIndex::queryVisible(const Extent& qExt,
     }
 }
 
-std::shared_ptr<VectorDataset> VectorDataset::open(const std::string& filePath) {
-    auto ds = std::make_shared<VectorDataset>(filePath);
+std::shared_ptr<VectorDataset> VectorDataset::open(const std::string& filePath,
+                                                   const std::atomic<bool>* cancelFlag) {
+    auto ds = std::make_shared<VectorDataset>(filePath, cancelFlag);
     if (!ds->isValid()) return nullptr;
     return ds;
 }
 
-VectorDataset::VectorDataset(const std::string& filePath)
+VectorDataset::VectorDataset(const std::string& filePath,
+                             const std::atomic<bool>* cancelFlag)
     : m_file_path(filePath)
 {
-    loadFromOgr();
+    loadFromOgr(cancelFlag);
 }
 
-bool VectorDataset::loadFromOgr() {
+bool VectorDataset::loadFromOgr(const std::atomic<bool>* cancelFlag) {
     GDALAllRegister();
     OGRRegisterAll();
 
@@ -382,6 +384,12 @@ bool VectorDataset::loadFromOgr() {
     poLayer->ResetReading();
     m_feature_count = 0;
     while (OGRFeature* poFeature = poLayer->GetNextFeature()) {
+        if (cancelFlag && cancelFlag->load(std::memory_order_relaxed)) {
+            OGRFeature::DestroyFeature(poFeature);
+            GDALClose(poDS);
+            m_valid = false;
+            return false;
+        }
         ++m_feature_count;
         OGRGeometry* poGeometry = poFeature->GetGeometryRef();
         if (poGeometry) {

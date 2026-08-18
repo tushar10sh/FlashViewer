@@ -2,6 +2,7 @@
 
 #include "core/Extent.hpp"
 #include <glm/vec2.hpp>
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -58,9 +59,11 @@ struct VectorGeometryCollection {
 
 class VectorDataset {
 public:
-    static std::shared_ptr<VectorDataset> open(const std::string& filePath);
+    static std::shared_ptr<VectorDataset> open(const std::string& filePath,
+                                               const std::atomic<bool>* cancelFlag = nullptr);
 
-    explicit VectorDataset(const std::string& filePath);
+    explicit VectorDataset(const std::string& filePath,
+                          const std::atomic<bool>* cancelFlag = nullptr);
     ~VectorDataset() = default;
 
     bool isValid() const { return m_valid; }
@@ -83,7 +86,7 @@ public:
         std::function<bool(int current, int total)> progressCallback = nullptr);
 
 private:
-    bool loadFromOgr();
+    bool loadFromOgr(const std::atomic<bool>* cancelFlag = nullptr);
 
     std::string m_file_path;
     std::string m_layer_name;

@@ -320,13 +320,20 @@ MainWindow::~MainWindow() = default;
 void MainWindow::openFiles(const QStringList& paths) {
     for (const auto& path : paths) {
         const std::string stdPath = path.toStdString();
+        const QString fname = QFileInfo(path).fileName();
         bool needsBinary = false;
 
         // For NetCDF/HDF5 files: ALWAYS enumerate subdatasets first and show
         // the picker even if GDAL could open the file directly. This prevents
         // GDAL from silently choosing the first/wrong variable.
         if (DatasetFactory::isMultiVariableFormat(stdPath)) {
-            auto subs = DatasetFactory::listSubdatasets(stdPath);
+            auto subs = runWithCancelDialog(
+                tr("Scanning Dataset"),
+                tr("Reading subdatasets in '%1'…").arg(fname),
+                [&](std::atomic<bool>&) {
+                    return DatasetFactory::listSubdatasets(stdPath);
+                });
+
             if (!subs.empty()) {
                 SubdatasetChoice choice = showSubdatasetMultiPicker(path, subs);
                 const QList<int>& selected = choice.indices;
@@ -341,13 +348,21 @@ void MainWindow::openFiles(const QStringList& paths) {
                     statusBar()->showMessage(
                         tr("Loaded %1 variable(s) from %2 as one multi-band layer")
                             .arg(selected.size())
-                            .arg(QFileInfo(path).fileName()), 4000);
+                            .arg(fname), 4000);
                     continue;
                 }
 
                 for (int idx : selected) {
-                    auto sub_ds = DatasetFactory::openSubdataset(
-                        subs[static_cast<size_t>(idx)].first);
+                    const std::string& subPath = subs[static_cast<size_t>(idx)].first;
+                    const QString varName = DatasetFactory::extractVarName(subPath);
+
+                    auto sub_ds = runWithCancelDialog(
+                        tr("Loading Variable"),
+                        tr("Opening variable '%1'…").arg(varName),
+                        [&](std::atomic<bool>&) {
+                            return DatasetFactory::openSubdataset(subPath);
+                        });
+
                     if (!sub_ds) continue;
                     // Missing grid OR missing CRS: offer coordinate assignment (FR-IO-9).
                     // This runs BEFORE the layer is built because a 2-D geolocation
@@ -361,19 +376,17 @@ void MainWindow::openFiles(const QStringList& paths) {
                     }
                     auto layer = std::make_shared<RasterLayer>(sub_ds);
                     layer->initSubdatasetMeta(stdPath, subs, idx);
-                    layer->setName(DatasetFactory::extractVarName(
-                        subs[static_cast<size_t>(idx)].first));
+                    layer->setName(varName);
                     if (geoloc_applied) registerCoordAssignment(*layer, *coords);
                     layer->setPaneId(activePaneId());   // display on the active pane
                     PerfMetrics::instance().markOpenStart(layer->layerId());  // NFR-PERF-3/4
                     m_layer_mgr->addLayer(layer);
-                    FV_INFO("Loaded subdataset '{}' from '{}'",
-                            subs[static_cast<size_t>(idx)].first, stdPath);
+                    FV_INFO("Loaded subdataset '{}' from '{}'", subPath, stdPath);
                 }
                 statusBar()->showMessage(
                     tr("Loaded %1 variable(s) from %2")
                         .arg(selected.size())
-                        .arg(QFileInfo(path).fileName()), 4000);
+                        .arg(fname), 4000);
                 continue;
             }
             // No subdatasets listed — fall through to direct open (single-variable file)
@@ -381,7 +394,6 @@ void MainWindow::openFiles(const QStringList& paths) {
 
         if (PyramidBuilder::shouldPromptPyramids(stdPath)) {
             auto [rw, rh] = PyramidBuilder::getRasterDimensions(stdPath);
-            const QString fname = QFileInfo(path).fileName();
             auto res = QMessageBox::question(
                 this,
                 tr("Generate Image Pyramids?"),
@@ -400,10 +412,12 @@ void MainWindow::openFiles(const QStringList& paths) {
                     tr("Generating image pyramids for %1...").arg(fname),
                     tr("Cancel"), 0, 100, this);
                 progress.setWindowTitle(tr("Building Pyramids"));
-                progress.setWindowModality(Qt::WindowModal);
+                progress.setWindowModality(Qt::ApplicationModal);
                 progress.setMinimumDuration(0);
                 progress.setValue(0);
                 progress.show();
+                progress.raise();
+                progress.activateWindow();
                 QApplication::processEvents();
 
                 bool ok = PyramidBuilder::buildPyramids(
@@ -425,7 +439,12 @@ void MainWindow::openFiles(const QStringList& paths) {
             }
         }
 
-        auto ds = DatasetFactory::open(stdPath, &needsBinary);
+        auto ds = runWithCancelDialog(
+            tr("Loading Dataset"),
+            tr("Opening dataset '%1'…").arg(fname),
+            [&](std::atomic<bool>&) {
+                return DatasetFactory::open(stdPath, &needsBinary);
+            });
 
         if (needsBinary) {
             BinaryImportDialog dlg(path, this);
@@ -433,21 +452,22 @@ void MainWindow::openFiles(const QStringList& paths) {
             auto spec = dlg.spec();
             std::string vrt = createVrtForBinary(spec);
             if (vrt.empty()) {
-                // Non-fatal report (FR-ERR-1 precursor; full ErrorReporter in Phase 10):
-                // log + transient status message instead of a blocking modal.
                 FV_WARN("Binary import failed: could not create VRT for '{}'", stdPath);
                 statusBar()->showMessage(
-                    tr("Import failed: could not build VRT for %1")
-                        .arg(QFileInfo(path).fileName()), 6000);
+                    tr("Import failed: could not build VRT for %1").arg(fname), 6000);
                 continue;
             }
-            ds = DatasetFactory::open(vrt);
+            ds = runWithCancelDialog(
+                tr("Loading Binary VRT"),
+                tr("Parsing binary VRT for '%1'…").arg(fname),
+                [&](std::atomic<bool>&) {
+                    return DatasetFactory::open(vrt);
+                });
         }
 
         if (!ds) {
             FV_WARN("Open failed: could not open '{}'", stdPath);
-            statusBar()->showMessage(
-                tr("Open failed: %1").arg(QFileInfo(path).fileName()), 6000);
+            statusBar()->showMessage(tr("Open failed: %1").arg(fname), 6000);
             continue;
         }
 
@@ -471,7 +491,7 @@ void MainWindow::openFiles(const QStringList& paths) {
         PerfMetrics::instance().markOpenStart(layer->layerId());   // NFR-PERF-3/4 probe
         m_layer_mgr->addLayer(layer);
         FV_INFO("Loaded '{}'", stdPath);
-        statusBar()->showMessage(tr("Loaded: %1").arg(QFileInfo(path).fileName()), 4000);
+        statusBar()->showMessage(tr("Loaded: %1").arg(fname), 4000);
     }
 }
 
@@ -1914,7 +1934,7 @@ void MainWindow::assignLayerToPane(int layerIndex, uint64_t paneId) {
                         .arg(targetLabel)
                         .arg(fvCrsShortName(targetCrs)),
                     tr("Cancel"), 0, 100, this);
-                progress.setWindowModality(Qt::WindowModal);
+                progress.setWindowModality(Qt::ApplicationModal);
                 progress.setMinimumDuration(150);
                 progress.setValue(0);
 
@@ -2689,10 +2709,15 @@ void MainWindow::openVectorFiles(const QStringList& paths, uint64_t targetPaneId
     const std::string targetCrs = targetCanvas ? targetCanvas->projectCrsWkt() : std::string();
 
     for (const QString& path : paths) {
-        auto ds = VectorDataset::open(path.toStdString());
+        const QString fname = QFileInfo(path).fileName();
+        auto ds = runWithCancelDialog(
+            tr("Loading Vector Layer"),
+            tr("Reading vector dataset '%1'…").arg(fname),
+            [&](std::atomic<bool>& cancel) {
+                return VectorDataset::open(path.toStdString(), &cancel);
+            });
+
         if (!ds) {
-            QMessageBox::critical(this, tr("Open Vector Failed"),
-                tr("Failed to read ESRI shapefile:\n%1").arg(path));
             continue;
         }
 
@@ -2719,7 +2744,7 @@ void MainWindow::openVectorFiles(const QStringList& paths, uint64_t targetPaneId
                     .arg(QFileInfo(path).fileName())
                     .arg(fvCrsShortName(targetCrs)),
                 tr("Cancel"), 0, 100, this);
-            progress.setWindowModality(Qt::WindowModal);
+            progress.setWindowModality(Qt::ApplicationModal);
             progress.setMinimumDuration(150);
             progress.setValue(0);
 
@@ -2785,7 +2810,7 @@ void MainWindow::setOsmBasemapEnabled(bool on) {
                 QProgressDialog progress(
                     tr("Converting vector layer '%1' to %2…").arg(vl->name(), osmCrsName),
                     tr("Cancel"), 0, 100, this);
-                progress.setWindowModality(Qt::WindowModal);
+                progress.setWindowModality(Qt::ApplicationModal);
                 progress.setMinimumDuration(150);
                 progress.setValue(0);
 

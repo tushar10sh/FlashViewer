@@ -9,10 +9,17 @@
 #include "gis/InspectTypes.hpp"        // InspectPaneGroup — the shared inspect/profile scope
 #include "panels/NoDataWidget.hpp"
 #include "render/PaneLayoutMode.hpp"   // applyPaneLayoutMode / the View → Pane Layout radio
+#include <QApplication>
+#include <QEventLoop>
+#include <QProgressDialog>
+#include <QStatusBar>
 #include <memory>
 #include <optional>
 #include <string>
 #include <vector>
+#include <atomic>
+#include <functional>
+#include <future>
 
 class MapCanvas;
 class PaneLayout;
@@ -266,4 +273,51 @@ private:
     // Closing one is handled in two places: the panel's own closeEvent() discards its plots
     // (so the rule holds however the window is closed), and the eventFilter() here saves the
     // frame and the divider, which only MainWindow knows the Settings key for.
+
+    // Modal background loading with cancel dialog (blocks background UI)
+    template <typename Fn>
+    auto runWithCancelDialog(const QString& title, const QString& labelText, Fn&& fn)
+        -> decltype(fn(std::declval<std::atomic<bool>&>()));
 };
+
+template <typename Fn>
+auto MainWindow::runWithCancelDialog(const QString& title, const QString& labelText, Fn&& fn)
+    -> decltype(fn(std::declval<std::atomic<bool>&>()))
+{
+    using ResultType = decltype(fn(std::declval<std::atomic<bool>&>()));
+    auto cancelFlag = std::make_shared<std::atomic<bool>>(false);
+
+    QProgressDialog progress(labelText, tr("Cancel"), 0, 0, this);
+    progress.setWindowTitle(title);
+    progress.setWindowModality(Qt::ApplicationModal);
+    progress.setMinimumDuration(0);
+    progress.setValue(0);
+    progress.show();
+    progress.raise();
+    progress.activateWindow();
+    QApplication::processEvents();
+
+    auto future = std::async(std::launch::async, [fn = std::forward<Fn>(fn), cancelFlag]() mutable -> ResultType {
+        return fn(*cancelFlag);
+    });
+
+    while (future.wait_for(std::chrono::milliseconds(20)) != std::future_status::ready) {
+        QApplication::processEvents(QEventLoop::AllEvents, 20);
+        if (progress.wasCanceled()) {
+            cancelFlag->store(true, std::memory_order_relaxed);
+            break;
+        }
+    }
+
+    if (progress.wasCanceled()) {
+        progress.close();
+        if (statusBar()) statusBar()->showMessage(tr("Loading cancelled by user."), 4000);
+        if (future.valid()) {
+            future.wait_for(std::chrono::milliseconds(200));
+        }
+        return ResultType{};
+    }
+
+    progress.close();
+    return future.get();
+}
