@@ -39,3 +39,51 @@ TEST_CASE("fvMetersPerPixel converts geographic scales, passes projected through
     // Non-positive input passes through unchanged (guarded).
     REQUIRE(fvMetersPerPixel(0.0, true) == 0.0);
 }
+
+#include "gis/GeoMeasurement.hpp"
+
+TEST_CASE("GeoMeasurement: Haversine distance between coordinates", "[gis][measurement]") {
+    // 1 degree of longitude along the equator ≈ 111.195 km
+    double d1 = fv::haversineDistance(0.0, 0.0, 1.0, 0.0);
+    REQUIRE_THAT(d1, Catch::Matchers::WithinAbs(111195.0, 200.0));
+
+    // Distance between London (-0.1278, 51.5074) and Paris (2.3522, 48.8566) ≈ 343.5 km
+    double dParisLondon = fv::haversineDistance(-0.1278, 51.5074, 2.3522, 48.8566);
+    REQUIRE_THAT(dParisLondon, Catch::Matchers::WithinAbs(343500.0, 1500.0));
+
+    // Same point -> 0 distance
+    REQUIRE(fv::haversineDistance(10.0, 20.0, 10.0, 20.0) == 0.0);
+
+    // Polyline calculation across 3 points (A -> B -> A)
+    std::vector<QPointF> pts = { QPointF(0.0, 0.0), QPointF(1.0, 0.0), QPointF(0.0, 0.0) };
+    double polyDist = fv::calculatePolylineDistance(pts, "EPSG:4326");
+    REQUIRE_THAT(polyDist, Catch::Matchers::WithinAbs(2.0 * d1, 10.0));
+}
+
+TEST_CASE("GeoMeasurement: Spherical geodesic polygon area", "[gis][measurement]") {
+    // A 1x1 degree square at the equator
+    std::vector<QPointF> square = {
+        QPointF(0.0, 0.0),
+        QPointF(1.0, 0.0),
+        QPointF(1.0, 1.0),
+        QPointF(0.0, 1.0)
+    };
+
+    double area = fv::calculatePolygonArea(square, "EPSG:4326");
+    // Expected area ≈ 1.23e10 m² (≈ 12,300 km²)
+    REQUIRE_THAT(area, Catch::Matchers::WithinAbs(1.23e10, 5e8));
+
+    // Degenerate polygon (< 3 vertices) returns 0
+    std::vector<QPointF> degen = { QPointF(0.0, 0.0), QPointF(1.0, 1.0) };
+    REQUIRE(fv::calculatePolygonArea(degen, "EPSG:4326") == 0.0);
+}
+
+TEST_CASE("GeoMeasurement: Formatting helpers", "[gis][measurement]") {
+    REQUIRE(fv::formatDistance(450.5) == QStringLiteral("450.50 m"));
+    REQUIRE(fv::formatDistance(1250.0) == QStringLiteral("1.250 km"));
+
+    REQUIRE(fv::formatArea(500.25) == QStringLiteral("500.25 m²"));
+    REQUIRE(fv::formatArea(25000.0).startsWith(QStringLiteral("2.50 ha")));
+    REQUIRE(fv::formatArea(2500000.0).startsWith(QStringLiteral("2.500 km²")));
+}
+

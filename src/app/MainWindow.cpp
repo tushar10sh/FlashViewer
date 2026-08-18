@@ -1032,6 +1032,32 @@ void MainWindow::setupMenuBar() {
             m_profile_panel->showLayerPlot(m_layer_mgr->activeIndex());
     });
 
+    toolsMenu->addSeparator();
+
+    m_act_inspect = toolsMenu->addAction(tr("&Inspect Pixel (I)"));
+    m_act_inspect->setCheckable(true);
+    m_act_inspect->setShortcut(QKeySequence(Qt::Key_I));
+    m_act_inspect->setToolTip(tr("Pixel Inspect mode: left-click=active layer, right-click=all layers (I)"));
+    connect(m_act_inspect, &QAction::triggered, this, [this](bool on) {
+        applyToolMode(on ? MapCanvas::ToolMode::Inspect : MapCanvas::ToolMode::Navigate);
+    });
+
+    m_act_measure_dist = toolsMenu->addAction(tr("Measure &Distance (M)"));
+    m_act_measure_dist->setCheckable(true);
+    m_act_measure_dist->setShortcut(QKeySequence(Qt::Key_M));
+    m_act_measure_dist->setToolTip(tr("Measure geodesic/Haversine distance along path (M)"));
+    connect(m_act_measure_dist, &QAction::triggered, this, [this](bool on) {
+        applyToolMode(on ? MapCanvas::ToolMode::MeasureDistance : MapCanvas::ToolMode::Navigate);
+    });
+
+    m_act_measure_area = toolsMenu->addAction(tr("Measure &Area (Ctrl+Shift+M)"));
+    m_act_measure_area->setCheckable(true);
+    m_act_measure_area->setShortcut(QKeySequence("Ctrl+Shift+M"));
+    m_act_measure_area->setToolTip(tr("Measure spherical geodesic polygon area and perimeter (Ctrl+Shift+M)"));
+    connect(m_act_measure_area, &QAction::triggered, this, [this](bool on) {
+        applyToolMode(on ? MapCanvas::ToolMode::MeasureArea : MapCanvas::ToolMode::Navigate);
+    });
+
     // ---- Settings ----
     auto* settingsMenu = menuBar()->addMenu(tr("&Settings"));
     auto* actPrefs = settingsMenu->addAction(tr("&Preferences / Settings…"));
@@ -1171,32 +1197,9 @@ void MainWindow::setupToolBar() {
     toolbar->addAction(actNewPane);
 
     toolbar->addSeparator();
-
-    auto* actInspect = new QAction(tr("Inspect"), this);
-    actInspect->setToolTip(tr("Pixel Inspect mode: left-click=active layer, right-click=all layers (I)"));
-    actInspect->setCheckable(true);
-    actInspect->setShortcut(QKeySequence(Qt::Key_I));
-    // Inspect mode is an app-wide UI mode: apply it to every pane (Phase 6).
-    connect(actInspect, &QAction::toggled, this, [this](bool on) {
-        for (int i = 0; i < m_pane_layout->paneCount(); ++i) {
-            if (auto* c = m_pane_layout->paneCanvas(i)) {
-                c->setInspectMode(on);
-                if (!on) c->clearInspectHighlight();
-            }
-        }
-        if (!on) {
-            if (m_numeric_dump) m_numeric_dump->clear();
-            if (m_attr_insp) m_attr_insp->clear();
-        }
-    });
-    connect(m_canvas, &MapCanvas::inspectModeChanged, this, [this, actInspect](bool on) {
-        actInspect->setChecked(on);
-        if (!on) {
-            if (m_numeric_dump) m_numeric_dump->clear();
-            if (m_attr_insp) m_attr_insp->clear();
-        }
-    });
-    toolbar->addAction(actInspect);
+    if (m_act_inspect)      toolbar->addAction(m_act_inspect);
+    if (m_act_measure_dist) toolbar->addAction(m_act_measure_dist);
+    if (m_act_measure_area) toolbar->addAction(m_act_measure_area);
 
     toolbar->addSeparator();
     auto* actShot = new QAction(tr("Screenshot"), this);
@@ -1878,6 +1881,18 @@ void MainWindow::wireCanvasSignals(MapCanvas* canvas) {
         inspectFromPane(canvas, x, y, /*allLayers=*/true);
     });
 
+    // Tool mode changes (Inspect, Measure Distance, Measure Area)
+    connect(canvas, &MapCanvas::toolModeChanged, this, [this](MapCanvas::ToolMode mode) {
+        if (m_act_inspect)      m_act_inspect->setChecked(mode == MapCanvas::ToolMode::Inspect);
+        if (m_act_measure_dist) m_act_measure_dist->setChecked(mode == MapCanvas::ToolMode::MeasureDistance);
+        if (m_act_measure_area) m_act_measure_area->setChecked(mode == MapCanvas::ToolMode::MeasureArea);
+    });
+    connect(canvas, &MapCanvas::measurementUpdated, this, [this](double /*dist*/, double /*area*/, const QString& summary) {
+        if (!summary.isEmpty()) {
+            statusBar()->showMessage(summary, 5000);
+        }
+    });
+
     // Pane gear-menu actions (Phase 6.1 / 6.2).
     connect(canvas, &MapCanvas::paneCloseRequested,  this, [this, canvas]{ closePane(canvas);  });
     connect(canvas, &MapCanvas::paneRenameRequested, this, [this, canvas]{ renamePane(canvas); });
@@ -2088,6 +2103,25 @@ void MainWindow::applyPaneLayoutMode(PaneLayoutMode m) {
     if (m_layout_acts[idx]) m_layout_acts[idx]->setChecked(true);
 }
 
+void MainWindow::applyToolMode(MapCanvas::ToolMode mode) {
+    if (m_act_inspect)      m_act_inspect->setChecked(mode == MapCanvas::ToolMode::Inspect);
+    if (m_act_measure_dist) m_act_measure_dist->setChecked(mode == MapCanvas::ToolMode::MeasureDistance);
+    if (m_act_measure_area) m_act_measure_area->setChecked(mode == MapCanvas::ToolMode::MeasureArea);
+
+    for (int i = 0; i < m_pane_layout->paneCount(); ++i) {
+        if (auto* c = m_pane_layout->paneCanvas(i)) {
+            c->setToolMode(mode);
+            if (mode != MapCanvas::ToolMode::Inspect) {
+                c->clearInspectHighlight();
+            }
+        }
+    }
+    if (mode != MapCanvas::ToolMode::Inspect) {
+        if (m_numeric_dump) m_numeric_dump->clear();
+        if (m_attr_insp)    m_attr_insp->clear();
+    }
+}
+
 void MainWindow::addPaneInteractive() {
     // Ask for the name AND the position before creating the pane. The name is pre-filled with
     // the default the pane would get anyway ("Pane N", N one past the highest number currently
@@ -2129,11 +2163,11 @@ MapCanvas* MainWindow::addPane(const QString& label) {
     // not auto-synced (Phase 6, point 13); empty label ⇒ PaneLayout's default
     auto* canvas = m_pane_layout->addPane(false, label);
     wireCanvasSignals(canvas);
-    // Inherit the current basemap + inspect mode + Performance HUD so the new pane
+    // Inherit the current basemap + tool mode + Performance HUD so the new pane
     // matches the others.
     if (m_canvas) {
         canvas->osmRenderer()->setEnabled(m_canvas->osmRenderer()->isEnabled());
-        canvas->setInspectMode(m_canvas->inspectMode());
+        canvas->setToolMode(m_canvas->toolMode());
         canvas->setPerfHudVisible(m_canvas->perfHudVisible());   // FR-APP-14
     }
     canvas->osmRenderer()->provider()->setUrlTemplate(Settings::instance().osmTileUrl());

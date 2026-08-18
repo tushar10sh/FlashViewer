@@ -129,9 +129,23 @@ public:
     // Colormap legend overlay
     ColormapLegend* colormapLegend() { return m_cm_legend; }
 
+    // Canvas interaction mode
+    enum class ToolMode {
+        Navigate = 0,
+        Inspect,
+        MeasureDistance,
+        MeasureArea
+    };
+
+    ToolMode toolMode() const { return m_tool_mode; }
+    void setToolMode(ToolMode mode);
+    void clearMeasurement();
+    const std::vector<QPointF>& measurementPoints() const { return m_measure_points; }
+    bool isMeasurementFinished() const { return m_measure_finished; }
+
     // Inspect mode: left-click → inspect active layer, right-click → inspect all
-    bool inspectMode() const { return m_inspect_mode; }
-    void setInspectMode(bool on);
+    bool inspectMode() const { return m_tool_mode == ToolMode::Inspect; }
+    void setInspectMode(bool on) { setToolMode(on ? ToolMode::Inspect : ToolMode::Navigate); }
     // Draw the red inspect-highlight square at a geographic point, snapped to this pane's
     // representative raster (public so MainWindow can mirror it onto synced sibling panes,
     // Phase 6.8.3). Out-of-bounds points clear this pane's highlight.
@@ -178,6 +192,8 @@ signals:
     void pixelInspectAllRequest(double geo_x, double geo_y);  // inspect all layers
     void canvasResized(int w, int h);
     void inspectModeChanged(bool on);
+    void toolModeChanged(ToolMode mode);
+    void measurementUpdated(double distanceMeters, double areaM2, const QString& summary);
     void layerDropped(int layerIndex);   // a layer was dragged from the panel onto this pane
     void paneAssignDropped(uint64_t paneId);   // a pane was dragged (by ID label) onto this pane (Phase 6.4)
     void projectCrsChanged(const QString& wkt);   // this pane's Project CRS changed (Phase 11)
@@ -193,11 +209,12 @@ protected:
     void paintGL()                 override;
     void resizeEvent(QResizeEvent* event) override;
 
-    void mousePressEvent(QMouseEvent* event)   override;
-    void mouseMoveEvent(QMouseEvent* event)    override;
-    void mouseReleaseEvent(QMouseEvent* event) override;
-    void wheelEvent(QWheelEvent* event)        override;
-    void keyPressEvent(QKeyEvent* event)       override;
+    void mousePressEvent(QMouseEvent* event)       override;
+    void mouseDoubleClickEvent(QMouseEvent* event) override;
+    void mouseMoveEvent(QMouseEvent* event)        override;
+    void mouseReleaseEvent(QMouseEvent* event)     override;
+    void wheelEvent(QWheelEvent* event)            override;
+    void keyPressEvent(QKeyEvent* event)           override;
     void dragEnterEvent(QDragEnterEvent* event) override;   // accept layer drags (Phase 6.3)
     void dropEvent(QDropEvent* event)           override;
 
@@ -212,25 +229,37 @@ private:
     LayerManager*                    m_layers{nullptr};
     uint64_t                         m_pane_id{kDefaultPaneId};
     Camera                           m_camera;
-    std::unique_ptr<TileRenderer>    m_tile_renderer;
-    std::unique_ptr<OsmTileRenderer> m_osm_renderer;
-    std::unique_ptr<VectorRenderer>  m_vector_renderer;
 
-    // Overlay widgets
-    ColormapLegend*          m_cm_legend{nullptr};
-    PixelHighlightOverlay*   m_highlight_overlay{nullptr};
-    PaneChrome*              m_chrome{nullptr};
-    ScaleBar*                m_scale_bar{nullptr};   // per-pane ruler overlay (bottom-left)
-    bool                     m_active{false};   // active-pane highlight
-    QColor                   m_pane_color;      // pane colour for border + chrome
+    // Shared tile cache across all layers in this pane
+    std::unique_ptr<TileCache> m_tile_cache;
+
+    // Sub-renderers
+    std::unique_ptr<TileRenderer>    m_tile_renderer;
+    std::unique_ptr<VectorRenderer>  m_vector_renderer;
+    std::unique_ptr<OsmTileRenderer> m_osm_renderer;
+    ColormapLegend*                  m_cm_legend{nullptr};
+
+    // UI overlays
+    PixelHighlightOverlay*  m_highlight_overlay{nullptr};
+    ScaleBar*               m_scale_bar{nullptr};
+    PaneChrome*             m_chrome{nullptr};
+    bool                    m_active{false};   // active-pane highlight
+    QColor                  m_pane_color;      // pane colour for border + chrome
     // Ghost cursor (Phase 6.5): a sibling synced pane's cursor mirrored here at a geo position.
-    bool                     m_ghost_active{false};
-    double                   m_ghost_x{0.0};
-    double                   m_ghost_y{0.0};
+    bool                    m_ghost_active{false};
+    double                  m_ghost_x{0.0};
+    double                  m_ghost_y{0.0};
     // Synchronous pixel highlight state (drawn inside paintGL without widget lag)
-    bool                     m_highlight_active{false};
-    std::array<QPointF, 4>   m_highlight_corners{};
-    void                     drawPixelHighlight();
+    bool                    m_highlight_active{false};
+    std::array<QPointF, 4>  m_highlight_corners{};
+    void                    drawPixelHighlight();
+
+    // Measurement tool state
+    ToolMode                m_tool_mode{ToolMode::Navigate};
+    std::vector<QPointF>    m_measure_points;       // points in Project CRS
+    QPointF                 m_measure_cursor_geo;   // cursor pos in Project CRS
+    bool                    m_measure_has_cursor{false};
+    bool                    m_measure_finished{false};
 
     // Repaint timer: fires while tiles are still loading (FR-RND-7).
     // m_repaint_clock measures elapsed time since the current load burst began;
@@ -238,6 +267,10 @@ private:
     QTimer*       m_repaint_timer{nullptr};
     QElapsedTimer m_repaint_clock;
     bool          m_repaint_timed_out{false};
+
+    // FPS / pan jitter detection
+    std::chrono::steady_clock::time_point m_last_paint_time;
+    std::chrono::steady_clock::time_point m_last_pan_time;
 
     // The canonical world view: the FULL longitude range centred on the prime meridian, so
     // the Americas sit left of centre and Asia/India to the right, plus Mercator's usable
@@ -249,7 +282,6 @@ private:
     bool    m_initial_view_done{false};   // world view applied on first sizing
     bool    m_gl_ready{false};  // true only after initializeGL() fully succeeds
     bool    m_dark_bg{true};
-    bool    m_inspect_mode{false};
     int     m_sync_role{0};     // 0=None, 1=Master, 2=Slave (mirrors PaneLayout::syncRoleAt)
     bool    m_capturing{false}; // true only during grabForExport() → paintGL skips the border
     bool    m_scalebar_visible{true};   // per-pane scale-bar show/hide (Phase 7 follow-up)
@@ -263,6 +295,7 @@ private:
     void initTriangle();
     void renderTriangle();
     void repositionOverlays();
+    void drawMeasurementOverlay();
     // Draw the Performance HUD overlay (FR-APP-14) — called at the end of paintGL,
     // after the frame time is recorded, so the HUD's own paint cost isn't counted.
     void drawPerfHud();

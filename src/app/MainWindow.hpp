@@ -9,6 +9,7 @@
 #include "gis/InspectTypes.hpp"        // InspectPaneGroup — the shared inspect/profile scope
 #include "panels/NoDataWidget.hpp"
 #include "render/PaneLayoutMode.hpp"   // applyPaneLayoutMode / the View → Pane Layout radio
+#include "render/MapCanvas.hpp"
 #include <QApplication>
 #include <QEventLoop>
 #include <QProgressDialog>
@@ -21,7 +22,6 @@
 #include <functional>
 #include <future>
 
-class MapCanvas;
 class PaneLayout;
 class LayerManager;
 class QPlainTextEdit;
@@ -238,6 +238,12 @@ private:
     // HalfV / Quarter, kept so applyPaneLayoutMode can re-tick them after a programmatic
     // mode change.
     QAction*               m_layout_acts[4]{nullptr, nullptr, nullptr, nullptr};
+
+    // Canvas tools: Inspect, Measure Distance, Measure Area
+    QAction*               m_act_inspect{nullptr};
+    QAction*               m_act_measure_dist{nullptr};
+    QAction*               m_act_measure_area{nullptr};
+    void                   applyToolMode(MapCanvas::ToolMode mode);
 
     // View → Panels (FR-APP-9): tracked docks + pristine default layout snapshot.
     QVector<DockEntry>     m_docks;

@@ -65,6 +65,7 @@ qt_add_executable(FlashViewer
     gis/AttributeInspector.hpp     gis/AttributeInspector.cpp
     gis/GdalOpsDialog.hpp          gis/GdalOpsDialog.cpp
     gis/CrsUtil.hpp
+    gis/GeoMeasurement.hpp
     gis/GeoTransform4326.hpp
     gis/CrsPickerDialog.hpp        gis/CrsPickerDialog.cpp
 
