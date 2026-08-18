@@ -1032,13 +1032,6 @@ void MainWindow::setupMenuBar() {
             m_profile_panel->showLayerPlot(m_layer_mgr->activeIndex());
     });
 
-    toolsMenu->addSeparator();
-
-    auto* actToolsSettings = toolsMenu->addAction(tr("&Preferences / Settings…"));
-    actToolsSettings->setMenuRole(QAction::NoRole);
-    actToolsSettings->setShortcut(QKeySequence("Ctrl+,"));
-    connect(actToolsSettings, &QAction::triggered, this, &MainWindow::showSettingsDialog);
-
     // ---- Settings ----
     auto* settingsMenu = menuBar()->addMenu(tr("&Settings"));
     auto* actPrefs = settingsMenu->addAction(tr("&Preferences / Settings…"));
@@ -1201,12 +1194,6 @@ void MainWindow::setupToolBar() {
     actShot->setShortcut(QKeySequence("Ctrl+Shift+S"));
     connect(actShot, &QAction::triggered, this, &MainWindow::captureScreenshot);
     toolbar->addAction(actShot);
-
-    toolbar->addSeparator();
-    auto* actSettings = new QAction(tr("Settings"), this);
-    actSettings->setToolTip(tr("Open Preferences / Settings Dialog (Ctrl+,)"));
-    connect(actSettings, &QAction::triggered, this, &MainWindow::showSettingsDialog);
-    toolbar->addAction(actSettings);
 }
 
 void MainWindow::setupDocks() {
