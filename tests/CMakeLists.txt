@@ -9,6 +9,7 @@ add_executable(flashviewer_tests
     test_geo_transform.cpp
     test_colormap.cpp
     test_tile_cache.cpp
+    test_vector.cpp
 
     # Phase 0 — test-infrastructure self-tests
     test_phase0_harness.cpp
@@ -86,9 +87,11 @@ add_executable(flashviewer_tests
     "${CMAKE_SOURCE_DIR}/src/core/TileCache.cpp"
     "${CMAKE_SOURCE_DIR}/src/core/ThreadPool.cpp"
     "${CMAKE_SOURCE_DIR}/src/core/RasterLayer.cpp"
+    "${CMAKE_SOURCE_DIR}/src/core/VectorLayer.cpp"
     "${CMAKE_SOURCE_DIR}/src/core/LayerManager.cpp"
     "${CMAKE_SOURCE_DIR}/src/panels/HistogramPanel.cpp"
     "${CMAKE_SOURCE_DIR}/src/panels/GpuMonitorPanel.cpp"
+    "${CMAKE_SOURCE_DIR}/src/panels/VectorLayerPanel.cpp"
     # LayerPanel + its icon button: TC-LYR-18/19 drive the real panel widget, because the
     # selection bookkeeping they pin lives in rebuildList, not in LayerGrouping's free
     # functions.
@@ -105,6 +108,7 @@ add_executable(flashviewer_tests
     "${CMAKE_SOURCE_DIR}/src/render/SyncGroup.cpp"
     "${CMAKE_SOURCE_DIR}/src/math/ExpressionEngine.cpp"
     "${CMAKE_SOURCE_DIR}/src/io/RasterDataset.cpp"
+    "${CMAKE_SOURCE_DIR}/src/io/VectorDataset.cpp"
     "${CMAKE_SOURCE_DIR}/src/io/DatasetFactory.cpp"
     "${CMAKE_SOURCE_DIR}/src/io/PyramidBuilder.cpp"
     "${CMAKE_SOURCE_DIR}/src/io/CloudReader.cpp"
@@ -115,6 +119,7 @@ add_executable(flashviewer_tests
     "${CMAKE_SOURCE_DIR}/src/render/GlslProgram.cpp"
     "${CMAKE_SOURCE_DIR}/src/render/Camera.cpp"
     "${CMAKE_SOURCE_DIR}/src/render/TileRenderer.cpp"
+    "${CMAKE_SOURCE_DIR}/src/render/VectorRenderer.cpp"
     "${CMAKE_SOURCE_DIR}/src/render/SurfaceFormat.cpp"
     "${CMAKE_SOURCE_DIR}/src/render/OsmTileRenderer.cpp"
     "${CMAKE_SOURCE_DIR}/src/io/OsmTileProvider.cpp"

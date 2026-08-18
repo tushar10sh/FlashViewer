@@ -6,6 +6,7 @@ qt_add_executable(FlashViewer
     app/Application.hpp  app/Application.cpp
     app/MainWindow.hpp   app/MainWindow.cpp
     app/Settings.hpp     app/Settings.cpp
+    app/SettingsDialog.hpp app/SettingsDialog.cpp
     app/GpuInfoDialog.hpp app/GpuInfoDialog.cpp
     app/AboutLicensesDialog.hpp app/AboutLicensesDialog.cpp
     app/CoordAssignDialog.hpp app/CoordAssignDialog.cpp
@@ -17,6 +18,7 @@ qt_add_executable(FlashViewer
     core/BandMapping.hpp
     core/Layer.hpp
     core/RasterLayer.hpp  core/RasterLayer.cpp
+    core/VectorLayer.hpp  core/VectorLayer.cpp
     core/LayerManager.hpp core/LayerManager.cpp
     core/TileKey.hpp
     core/ThreadPool.hpp   core/ThreadPool.cpp
@@ -26,6 +28,7 @@ qt_add_executable(FlashViewer
 
     # I/O
     io/RasterDataset.hpp    io/RasterDataset.cpp
+    io/VectorDataset.hpp    io/VectorDataset.cpp
     io/DatasetFactory.hpp   io/DatasetFactory.cpp
     io/PyramidBuilder.hpp   io/PyramidBuilder.cpp
     io/BinaryRasterParser.hpp io/BinaryRasterParser.cpp
@@ -42,6 +45,7 @@ qt_add_executable(FlashViewer
     render/SurfaceFormat.hpp    render/SurfaceFormat.cpp
     render/Camera.hpp           render/Camera.cpp
     render/TileRenderer.hpp     render/TileRenderer.cpp
+    render/VectorRenderer.hpp   render/VectorRenderer.cpp
     render/MapCanvas.hpp        render/MapCanvas.cpp
     render/SyncGroup.hpp        render/SyncGroup.cpp
     render/Pane.hpp             render/Pane.cpp
@@ -78,6 +82,7 @@ qt_add_executable(FlashViewer
     panels/NoDataWidget.hpp         panels/NoDataWidget.cpp
     panels/GpuMonitorPanel.hpp      panels/GpuMonitorPanel.cpp
     panels/NumericDumpPanel.hpp     panels/NumericDumpPanel.cpp
+    panels/VectorLayerPanel.hpp     panels/VectorLayerPanel.cpp
 
     # Plots
     plots/SpectralPlotPanel.hpp    plots/SpectralPlotPanel.cpp
