@@ -61,6 +61,7 @@ public:
     // Frame timer (NFR-PERF-1) — push one paintGL duration (ms); always-on.
     void       pushFrame(double ms);
     FrameStats frameStats() const;
+    double     sampleGpuUtilization(double windowMs = 250.0) const;
 
     // Open-latency probe (NFR-PERF-3/4). markOpenStart stamps the open; the first
     // markFirstTileReady for that layer records the first-visible-tile latency and
@@ -84,6 +85,7 @@ private:
 
     mutable std::mutex m_mutex;
     std::deque<double> m_frames;                       // rolling per-frame ms
+    std::deque<std::pair<int64_t, double>> m_frame_timestamps; // (timestamp_ns, ms)
     std::unordered_map<uint64_t, int64_t> m_open_start_ns;  // layer_id → open-start ns
     double m_last_open_latency_ms{0.0};
     int    m_stall_count{0};

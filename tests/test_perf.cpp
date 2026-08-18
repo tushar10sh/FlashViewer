@@ -107,6 +107,24 @@ TEST_CASE("TC-PERF-05 PerfMetrics ring buffer + stall counter", "[perf][logic]")
     CHECK(pm.stallCount() == 0);
 }
 
+TEST_CASE("TC-PERF-06 GPU utilization duty cycle sampling", "[perf][logic]") {
+    auto& pm = PerfMetrics::instance();
+    pm.reset();
+
+    // Idle initially -> 0% GPU load
+    CHECK_THAT(pm.sampleGpuUtilization(250.0), WithinAbs(0.0, 1e-9));
+
+    // 10 frames taking 5ms each rendered within the last 250ms -> 50ms / 250ms = 20% GPU load
+    for (int i = 0; i < 10; ++i) {
+        pm.pushFrame(5.0);
+    }
+    double load = pm.sampleGpuUtilization(250.0);
+    CHECK_THAT(load, WithinAbs(20.0, 1e-1));
+
+    pm.reset();
+    CHECK_THAT(pm.sampleGpuUtilization(250.0), WithinAbs(0.0, 1e-9));
+}
+
 // --- FR-CAP-3 — report (not silently truncate) unrepresentable data ------------
 
 namespace {

@@ -1,5 +1,6 @@
 #include "panels/GpuMonitorPanel.hpp"
 #include "util/SystemMetrics.hpp"
+#include "util/PerfMetrics.hpp"
 
 #include <QPainter>
 #include <QPolygonF>
@@ -397,7 +398,7 @@ void GpuMonitorPanel::addSample(std::size_t bytes, int tiles, int panes) {
         : 0.0;
     s.tiles = tiles;
     s.panes = panes;
-    s.gpu_percent = std::clamp((static_cast<double>(tiles) / 64.0) * 100.0, 0.0, 100.0);
+    s.gpu_percent = PerfMetrics::instance().sampleGpuUtilization(250.0);
 
     addResourceSample(s);
 }
