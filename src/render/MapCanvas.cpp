@@ -916,8 +916,8 @@ void MapCanvas::setInspectMode(bool on) {
     if (m_inspect_mode == on) return;
     m_inspect_mode = on;
     setCursor(on ? Qt::CrossCursor : Qt::ArrowCursor);
-    if (!on && m_highlight_overlay)
-        m_highlight_overlay->clearHighlight();
+    if (!on)
+        clearInspectHighlight();
     emit inspectModeChanged(on);
 }
 
@@ -934,11 +934,11 @@ void MapCanvas::updateHighlightForGeo(double geo_x, double geo_y) {
     // this pane shows (mirrors paneIsGeographic / the inspector's representative-layer pick, so
     // a synced sibling snaps the click to its own dataset — Phase 6.8.3).
     std::shared_ptr<Layer> rep = activeLayerInPane();
-    if (!rep || rep->type() != LayerType::Raster) {
+    if (!rep || rep->type() != LayerType::Raster || !rep->visible()) {
         for (const auto& l : paneLayers())
-            if (l && l->type() == LayerType::Raster) { rep = l; break; }
+            if (l && l->type() == LayerType::Raster && l->visible()) { rep = l; break; }
     }
-    if (!rep || rep->type() != LayerType::Raster) {
+    if (!rep || rep->type() != LayerType::Raster || !rep->visible()) {
         clearInspectHighlight();
         return;
     }

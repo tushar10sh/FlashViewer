@@ -42,8 +42,9 @@
 static constexpr const char* kLayerMime = "application/x-flashviewer-layer";
 
 static constexpr int kColName   = 0;
-static constexpr int kColVis    = 1;
-static constexpr int kColOp     = 2;
+static constexpr int kColOrder  = 1;
+static constexpr int kColVis    = 2;
+static constexpr int kColOp     = 3;
 // Per-item roles. kLayerIndexRole is the LayerManager index of a layer row and is -1 on
 // pane-group headers and on the subdataset combo grandchild, so every row can be classified
 // without walking the tree (Phase 18 #6).
@@ -370,11 +371,12 @@ QMimeData* LayerTreeWidget::mimeData(const QList<QTreeWidgetItem*>& items) const
 LayerPanel::LayerPanel(QWidget* parent) : QWidget(parent) {
     m_tree = new LayerTreeWidget(this);
     m_tree->setObjectName("layerTree");   // scopes the blank-indicator QSS rule (#4)
-    m_tree->setColumnCount(3);
-    m_tree->setHeaderLabels({tr("Layer"), tr("Vis"), tr("Opacity")});
-    m_tree->header()->setSectionResizeMode(kColName, QHeaderView::Stretch);
-    m_tree->header()->setSectionResizeMode(kColVis,  QHeaderView::Fixed);
-    m_tree->header()->setSectionResizeMode(kColOp,   QHeaderView::Fixed);
+    m_tree->setColumnCount(4);
+    m_tree->setHeaderLabels({tr("Layer"), tr(""), tr("Vis"), tr("Opacity")});
+    m_tree->header()->setSectionResizeMode(kColName,  QHeaderView::Stretch);
+    m_tree->header()->setSectionResizeMode(kColOrder, QHeaderView::Fixed);
+    m_tree->header()->setSectionResizeMode(kColVis,   QHeaderView::Fixed);
+    m_tree->header()->setSectionResizeMode(kColOp,    QHeaderView::Fixed);
     m_tree->header()->setStretchLastSection(false);
     resizeHeaderColumns();
     m_tree->setRootIsDecorated(true);    // pane groups are collapsible drop-downs (Phase 18 #6)
@@ -621,6 +623,8 @@ void LayerPanel::rebuildList() {
             if (!layer) continue;
             auto* item = new QTreeWidgetItem(header);
             item->setText(kColName, layer->name());
+            QString srcPath = layer->sourceFilePath();
+            item->setToolTip(kColName, srcPath.isEmpty() ? layer->name() : srcPath);
             item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsEditable
                            | Qt::ItemIsDragEnabled | Qt::ItemIsDropEnabled);
             item->setData(kColName, kLayerIndexRole, i);
@@ -629,6 +633,49 @@ void LayerPanel::rebuildList() {
             item->setData(kColName, kPaneColorRole,  paneCol);   // drives PaneColorDelegate
             item->setData(kColName, kActiveRole, i == m_mgr->activeIndex());  // bold if active (#3)
             item->setData(kColName, kPaneSelRole, selectedPanes.contains(grp.paneId));
+
+            // Up / Down arrow buttons to move layers up or down the stack
+            auto* orderWrap = new QWidget(m_tree);
+            auto* orderLay  = new QHBoxLayout(orderWrap);
+            orderLay->setContentsMargins(0, 0, 0, 0);
+            orderLay->setSpacing(1);
+
+            auto* btnUp   = new SvgIconButton(orderWrap);
+            auto* btnDown = new SvgIconButton(orderWrap);
+            btnUp->setObjectName("layerRowUpBtn");
+            btnDown->setObjectName("layerRowDownBtn");
+            btnUp->setFixedSize(16, 16);
+            btnDown->setFixedSize(16, 16);
+
+            bool isDark = palette().base().color().lightness() < 128;
+            QString sfx = isDark ? "_dark" : "_light";
+            btnUp->setSvgPath(":/icons/arrow_up" + sfx + ".svg");
+            btnDown->setSvgPath(":/icons/arrow_down" + sfx + ".svg");
+
+            const int layerIdx = i;
+            const bool canUp   = fvPaneNeighbourIndex(m_mgr->layers(), layerIdx, -1) >= 0;
+            const bool canDown = fvPaneNeighbourIndex(m_mgr->layers(), layerIdx, +1) >= 0;
+            btnUp->setEnabled(canUp);
+            btnDown->setEnabled(canDown);
+            btnUp->setToolTip(tr("Move layer up in stack"));
+            btnDown->setToolTip(tr("Move layer down in stack"));
+
+            connect(btnUp, &QToolButton::clicked, this, [this, layerIdx] {
+                if (m_updating || !m_mgr) return;
+                int to = fvPaneNeighbourIndex(m_mgr->layers(), layerIdx, -1);
+                if (to >= 0) m_mgr->moveLayer(layerIdx, to);
+            });
+            connect(btnDown, &QToolButton::clicked, this, [this, layerIdx] {
+                if (m_updating || !m_mgr) return;
+                int to = fvPaneNeighbourIndex(m_mgr->layers(), layerIdx, +1);
+                if (to >= 0) m_mgr->moveLayer(layerIdx, to);
+            });
+
+            orderLay->addStretch();
+            orderLay->addWidget(btnUp);
+            orderLay->addWidget(btnDown);
+            orderLay->addStretch();
+            m_tree->setItemWidget(item, kColOrder, orderWrap);
 
             // Visibility checkbox as an item widget (so it can be tinted with the pane
             // colour); centred in the column.
@@ -1082,6 +1129,7 @@ void LayerPanel::resizeHeaderColumns() {
     const int headerNeed = QFontMetrics(headerFont).horizontalAdvance(tr("Vis"))
                            + kSectionChrome;
     const int tickNeed   = kFvTickBoxSide + 2 * kTickClearance;
+    m_tree->header()->resizeSection(kColOrder, 38);
     m_tree->header()->resizeSection(kColVis, std::max(headerNeed, tickNeed));
     m_tree->header()->resizeSection(kColOp, 80);
 }
@@ -1092,6 +1140,13 @@ void LayerPanel::updateArrowIcons() {
     m_btn_up->setSvgPath(":/icons/arrow_up"   + sfx + ".svg");
     m_btn_down->setSvgPath(":/icons/arrow_down" + sfx + ".svg");
     m_btn_del->setSvgPath(":/icons/trash"     + sfx + ".svg");
+
+    for (auto* btn : m_tree->findChildren<SvgIconButton*>()) {
+        if (btn->objectName() == "layerRowUpBtn")
+            btn->setSvgPath(":/icons/arrow_up" + sfx + ".svg");
+        else if (btn->objectName() == "layerRowDownBtn")
+            btn->setSvgPath(":/icons/arrow_down" + sfx + ".svg");
+    }
 }
 
 void LayerPanel::changeEvent(QEvent* e) {

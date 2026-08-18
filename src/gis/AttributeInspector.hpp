@@ -28,6 +28,9 @@ public:
     void inspectGroups(double geo_x, double geo_y, const std::string& geoWkt,
                        const QVector<InspectPaneGroup>& groups);
 
+    // Clear the inspector display
+    void clear();
+
     // Drop the drop-down for a pane whose inspected data is no longer valid (e.g. its active
     // layer was removed). No-op if that pane has no section shown.
     void removePaneGroup(uint64_t paneId);

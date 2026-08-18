@@ -282,11 +282,21 @@ void NumericDumpPanel::inspectGroups(double geo_x, double geo_y, const std::stri
     m_layer_combo->clear();
 
     for (const auto& g : groups) {
+        int layerNumInPane = 1;
         for (const auto& l : g.layers) {
             if (l.layer) {
                 m_cached_layers.push_back(l);
-                QString itemLabel = g.paneLabel.isEmpty() ? l.name : QString("[%1] %2").arg(g.paneLabel, l.name);
+                QString itemLabel;
+                if (!g.paneLabel.isEmpty()) {
+                    itemLabel = QString("[%1 #%2] %3").arg(g.paneLabel).arg(layerNumInPane).arg(l.name);
+                } else {
+                    itemLabel = QString("[#%1] %2").arg(layerNumInPane).arg(l.name);
+                }
                 m_layer_combo->addItem(itemLabel);
+                QString fullPath = l.layer->sourceFilePath();
+                if (fullPath.isEmpty()) fullPath = l.name;
+                m_layer_combo->setItemData(m_layer_combo->count() - 1, fullPath, Qt::ToolTipRole);
+                layerNumInPane++;
             }
         }
     }
@@ -301,6 +311,13 @@ void NumericDumpPanel::inspectGroups(double geo_x, double geo_y, const std::stri
         m_selected_layer_idx = 0;
     }
     m_layer_combo->setCurrentIndex(m_selected_layer_idx);
+    if (m_selected_layer_idx >= 0 && m_selected_layer_idx < m_cached_layers.size()) {
+        auto* rl = m_cached_layers[m_selected_layer_idx].layer;
+        if (rl) {
+            QString path = rl->sourceFilePath();
+            m_layer_combo->setToolTip(path.isEmpty() ? rl->name() : path);
+        }
+    }
 
     refresh();
 }
@@ -310,6 +327,7 @@ void NumericDumpPanel::clear() {
     m_info_label->setText(tr("Center Pixel: Col --, Row --"));
     m_coord_label->setText(tr("No raster data inspected"));
     m_status_label->setText(tr("Click on map to inspect pixel values"));
+    m_layer_combo->setToolTip(QString{});
     updateTable();
 }
 
@@ -324,6 +342,9 @@ void NumericDumpPanel::refresh() {
         clear();
         return;
     }
+
+    QString path = rl->sourceFilePath();
+    m_layer_combo->setToolTip(path.isEmpty() ? rl->name() : path);
 
     bool ok = fvSamplePixelPatch(rl, m_geo_x, m_geo_y, m_geo_wkt, 11, m_patch_sample);
     if (!ok || !m_patch_sample.valid) {

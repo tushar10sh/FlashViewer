@@ -1184,8 +1184,18 @@ void MainWindow::setupToolBar() {
                 if (!on) c->clearInspectHighlight();
             }
         }
+        if (!on) {
+            if (m_numeric_dump) m_numeric_dump->clear();
+            if (m_attr_insp) m_attr_insp->clear();
+        }
     });
-    connect(m_canvas, &MapCanvas::inspectModeChanged, actInspect, &QAction::setChecked);
+    connect(m_canvas, &MapCanvas::inspectModeChanged, this, [this, actInspect](bool on) {
+        actInspect->setChecked(on);
+        if (!on) {
+            if (m_numeric_dump) m_numeric_dump->clear();
+            if (m_attr_insp) m_attr_insp->clear();
+        }
+    });
     toolbar->addAction(actInspect);
 
     toolbar->addSeparator();
@@ -2415,12 +2425,23 @@ void MainWindow::inspectFromPane(MapCanvas* clicked, double gx, double gy, bool 
     }
     auto active = m_layer_mgr->activeLayer();
     QVector<InspectPaneGroup> groups;
+    QVector<InspectPaneGroup> numeric_groups;
     for (uint64_t pid : panes) {
         InspectPaneGroup grp;
         grp.paneId = pid;
         grp.paneColor = m_pane_layout->paneColorForId(pid);
         for (int i = 0; i < m_pane_layout->paneCount(); ++i)
             if (m_pane_layout->paneId(i) == pid) { grp.paneLabel = m_pane_layout->paneLabel(i); break; }
+
+        InspectPaneGroup numGrp = grp;
+
+        // All visible raster layers in this pane for the numeric dump panel
+        for (int i = 0; i < m_layer_mgr->count(); ++i) {
+            auto l = m_layer_mgr->layerAt(i);
+            if (l && l->paneId() == pid && l->visible() && l->type() == LayerType::Raster) {
+                numGrp.layers.push_back(InspectLayerEntry{ l->name(), static_cast<RasterLayer*>(l.get()) });
+            }
+        }
 
         // A hidden layer's pixel value is never shown in the inspector (gates both the
         // left-click representative and the right-click all-layers paths).
@@ -2436,16 +2457,24 @@ void MainWindow::inspectFromPane(MapCanvas* clicked, double gx, double gy, bool 
                     addLayer(l);
             }
         } else {
-            // The pane's representative layer: the global active layer if it lives here, else
-            // the pane's topmost layer (mirrors updatePaneLegends).
+            // The pane's representative raster layer: the global active layer if it is a visible
+            // raster in this pane, else the first visible raster layer in this pane (skipping vector layers).
             std::shared_ptr<Layer> rep;
-            if (active && active->type() == LayerType::Raster && active->paneId() == pid)
+            if (active && active->type() == LayerType::Raster && active->paneId() == pid && active->visible()) {
                 rep = active;
-            else
-                rep = m_layer_mgr->layerAt(topLayerIndexInPane(pid));
+            } else {
+                for (int i = 0; i < m_layer_mgr->count(); ++i) {
+                    auto l = m_layer_mgr->layerAt(i);
+                    if (l && l->paneId() == pid && l->visible() && l->type() == LayerType::Raster) {
+                        rep = l;
+                        break;
+                    }
+                }
+            }
             addLayer(rep);
         }
         groups.push_back(std::move(grp));
+        numeric_groups.push_back(std::move(numGrp));
     }
 
     // (gx,gy) are in the clicked pane's Project CRS; pass it so the inspector samples each
@@ -2453,7 +2482,7 @@ void MainWindow::inspectFromPane(MapCanvas* clicked, double gx, double gy, bool 
     const std::string geoWkt = clicked->projectCrsWkt();
     m_attr_insp->inspectGroups(gx, gy, geoWkt, groups);
     if (m_numeric_dump)
-        m_numeric_dump->inspectGroups(gx, gy, geoWkt, groups);
+        m_numeric_dump->inspectGroups(gx, gy, geoWkt, numeric_groups);
 
     // The Spectral Plot is fed the SAME groups (Phase 26), so its curves and the inspector's
     // rows always describe one selection: left-click ⇒ the topmost/representative layer of

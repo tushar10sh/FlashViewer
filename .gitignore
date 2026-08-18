@@ -56,3 +56,5 @@ sample_data/
 *.tar.gz
 *.zip
 *.dmg
+create-rocky-linux-standalone-package.sh
+

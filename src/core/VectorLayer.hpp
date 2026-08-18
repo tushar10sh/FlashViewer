@@ -16,6 +16,9 @@ public:
 
     uint64_t layerId() const { return m_layer_id; }
     LayerType type() const override { return LayerType::Vector; }
+    QString sourceFilePath() const override {
+        return m_ds ? QString::fromStdString(m_ds->filePath()) : QString{};
+    }
 
     VectorDataset* dataset() const { return m_ds.get(); }
     std::shared_ptr<VectorDataset> datasetPtr() const { return m_ds; }

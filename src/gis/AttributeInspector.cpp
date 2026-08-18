@@ -78,6 +78,11 @@ void AttributeInspector::changeEvent(QEvent* e) {
     QWidget::changeEvent(e);
 }
 
+void AttributeInspector::clear() {
+    m_coord_label->setText(tr("Click on map to inspect pixel values"));
+    clearGroups();
+}
+
 void AttributeInspector::inspectGroups(double geo_x, double geo_y, const std::string& geoWkt,
                                        const QVector<InspectPaneGroup>& groups) {
     auto fmt = fvFormatCoordinates(geo_x, geo_y, geoWkt);

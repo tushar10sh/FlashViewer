@@ -18,6 +18,9 @@ public:
     uint64_t layerId() const { return m_layer_id; }
 
     LayerType type() const override { return LayerType::Raster; }
+    QString sourceFilePath() const override {
+        return m_ds ? QString::fromStdString(m_ds->filePath()) : QString{};
+    }
 
     RasterDataset*       dataset()     const { return m_ds.get(); }
     // Shared ownership, for work that OUTLIVES the call — an async tile decode keeps the

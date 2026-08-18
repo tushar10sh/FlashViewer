@@ -22,6 +22,7 @@ public:
     QString name()    const { return m_name; }
     bool    visible() const { return m_visible; }
     float   opacity() const { return m_opacity; }
+    virtual QString sourceFilePath() const { return {}; }
     // The pane this layer is displayed on (0 = all panes overlay, 1+ = specific pane).
     uint64_t paneId() const { return m_pane_id; }
 
