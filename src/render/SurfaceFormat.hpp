@@ -6,4 +6,5 @@
 // Realizes FR-RND-6 (anti-aliasing) and FR-APP-7 / DC-2 (GL 4.1 Core).
 // Factored out of main() so the configuration is inspectable in tests
 // (TC-RND-09) without launching the GUI.
-QSurfaceFormat fvDefaultSurfaceFormat();
+QSurfaceFormat fvDefaultSurfaceFormat(bool cpuMode = false);
+

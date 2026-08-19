@@ -95,6 +95,7 @@ void GpuInfoDialog::buildUi(const GlInfo& info) {
 
     auto* presets = new QComboBox(envBox);
     presets->addItem(tr("(custom)"), QString());
+    presets->addItem("LIBGL_ALWAYS_SOFTWARE=1 (CPU-only / llvmpipe)", "LIBGL_ALWAYS_SOFTWARE=1");
     presets->addItem("DRI_PRIME=1",                        "DRI_PRIME=1");
     presets->addItem("DRI_PRIME=0",                        "DRI_PRIME=0");
     presets->addItem("__GLX_VENDOR_LIBRARY_NAME=nvidia",   "__GLX_VENDOR_LIBRARY_NAME=nvidia");

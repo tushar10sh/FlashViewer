@@ -5,6 +5,7 @@ qt_add_executable(FlashViewer
     # App
     app/Application.hpp  app/Application.cpp
     app/MainWindow.hpp   app/MainWindow.cpp
+    app/CommandLineOptions.hpp
     app/Settings.hpp     app/Settings.cpp
     app/SettingsDialog.hpp app/SettingsDialog.cpp
     app/GpuInfoDialog.hpp app/GpuInfoDialog.cpp

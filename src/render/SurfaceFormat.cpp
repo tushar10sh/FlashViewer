@@ -1,10 +1,10 @@
 #include "render/SurfaceFormat.hpp"
 
-QSurfaceFormat fvDefaultSurfaceFormat() {
+QSurfaceFormat fvDefaultSurfaceFormat(bool cpuMode) {
     QSurfaceFormat fmt;
     fmt.setVersion(4, 1);
     fmt.setProfile(QSurfaceFormat::CoreProfile);
-    fmt.setSamples(4);               // MSAA 4× (FR-RND-6)
+    fmt.setSamples(cpuMode ? 0 : 4);               // MSAA 4× in hardware (FR-RND-6); disabled in CPU mode for fast software rendering
     fmt.setDepthBufferSize(24);
     fmt.setStencilBufferSize(8);
     // NOTE: the framebuffer keeps its alpha channel; the "whitish tinge / see-through"

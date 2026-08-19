@@ -258,26 +258,30 @@ void MapCanvas::initializeGL() {
     QOpenGLContext* ctx = QOpenGLContext::currentContext();
     if (!ctx || !ctx->isValid()) {
         FV_CRITICAL("MapCanvas::initializeGL: no valid OpenGL context. "
-                    "Ensure mesa-dri-drivers and libxcb-glx are installed. "
-                    "On headless servers use: xvfb-run -a ./FlashViewer");
+                    "For remote X11 / SSH redirection (ssh -X / -Y) or systems without a compatible GPU, "
+                    "launch FlashViewer in CPU-only software mode: FlashViewer --cpu");
         showGlError(
             "Could not obtain a valid OpenGL context.\n\n"
+            "If you are running over remote X11 (ssh -X / -Y), Docker without GPU passthrough,\n"
+            "or on a system without a compatible GPU, run FlashViewer in CPU-only mode:\n\n"
+            "    FlashViewer --cpu\n\n"
             "On RHEL / AlmaLinux / Rocky Linux 9, install the missing runtime packages:\n"
-            "  sudo dnf install mesa-dri-drivers libxcb-glx\n\n"
-            "On a headless server, prefix the launch command with xvfb-run -a\n"
-            "(Xvfb requires mesa-dri-drivers for its software OpenGL rasteriser).");
+            "    sudo dnf install mesa-dri-drivers libxcb-glx\n\n"
+            "On a headless server, prefix the launch command with:\n"
+            "    xvfb-run -a FlashViewer --cpu");
         return;
     }
 
     // Step 2: resolve all GL 4.1 Core function pointers.
     if (!initializeOpenGLFunctions()) {
         FV_CRITICAL("MapCanvas::initializeGL: failed to resolve OpenGL 4.1 Core "
-                    "functions — context exists but does not expose GL 4.1 Core Profile.");
+                    "functions. Run with FlashViewer --cpu for software rasterization (Mesa llvmpipe).");
         showGlError(
             "OpenGL 4.1 Core Profile functions could not be resolved.\n\n"
-            "The GPU driver reports a context but does not expose the required\n"
-            "OpenGL 4.1 Core entry points. Update your GPU driver.\n\n"
-            "Minimum supported GPUs: NVIDIA Kepler (GTX 600+), "
+            "If your remote X server or GPU driver does not expose OpenGL 4.1 Core Profile,\n"
+            "run FlashViewer in CPU-only mode:\n\n"
+            "    FlashViewer --cpu\n\n"
+            "Minimum supported hardware GPUs: NVIDIA Kepler (GTX 600+), "
             "AMD GCN (HD 7000+), Intel HD Graphics 4000+.");
         return;
     }
@@ -291,11 +295,23 @@ void MapCanvas::initializeGL() {
     // All checks passed — safe to make GL calls from here on.
     m_gl_ready = true;
     const char* vnd = reinterpret_cast<const char*>(glGetString(GL_VENDOR));
-    m_gl_info = {
-        QString::fromUtf8(ren ? ren : "unknown"),
-        QString::fromUtf8(vnd ? vnd : "unknown"),
-        QString::fromUtf8(ver ? ver : "unknown"),
-    };
+    const QString renStr = QString::fromUtf8(ren ? ren : "unknown");
+    const QString vndStr = QString::fromUtf8(vnd ? vnd : "unknown");
+    const QString verStr = QString::fromUtf8(ver ? ver : "unknown");
+
+    const bool isSoftware = renStr.contains("llvmpipe", Qt::CaseInsensitive) ||
+                            renStr.contains("software", Qt::CaseInsensitive) ||
+                            renStr.contains("swrast", Qt::CaseInsensitive);
+
+    if (isSoftware) {
+        FV_INFO("OpenGL initialized using Software/CPU Rasterizer: {} by {} ({})",
+                renStr.toStdString(), vndStr.toStdString(), verStr.toStdString());
+    } else {
+        FV_INFO("OpenGL initialized using Hardware GPU: {} by {} ({})",
+                renStr.toStdString(), vndStr.toStdString(), verStr.toStdString());
+    }
+
+    m_gl_info = { renStr, vndStr, verStr };
 
     glEnable(GL_BLEND);
     // Per-layer opacity compositing, QGIS/ENVI-style: each layer is blended "source-over" onto

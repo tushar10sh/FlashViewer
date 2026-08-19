@@ -134,10 +134,55 @@ TEST_CASE("TC-RND-07 progressive refresh respects the bounded budget", "[render]
 }
 
 TEST_CASE("TC-RND-09 default surface format requests MSAA 4x and GL 4.1 Core", "[render][msaa]") {
-    const QSurfaceFormat fmt = fvDefaultSurfaceFormat();
+    const QSurfaceFormat fmt = fvDefaultSurfaceFormat(/*cpuMode=*/false);
     CHECK(fmt.samples() == 4);                             // FR-RND-6
     CHECK(fmt.majorVersion() == 4);
     CHECK(fmt.minorVersion() == 1);
     CHECK(fmt.profile() == QSurfaceFormat::CoreProfile);   // FR-APP-7 / DC-2
     CHECK(fmt.depthBufferSize() >= 24);
+
+    // In CPU-only / software rasterizer mode, samples are 0 (no MSAA) for performance & X11 compatibility
+    const QSurfaceFormat cpuFmt = fvDefaultSurfaceFormat(/*cpuMode=*/true);
+    CHECK(cpuFmt.samples() == 0);
+    CHECK(cpuFmt.majorVersion() == 4);
+    CHECK(cpuFmt.profile() == QSurfaceFormat::CoreProfile);
 }
+
+#include "app/CommandLineOptions.hpp"
+
+TEST_CASE("CommandLineOptions: parsing --cpu and arguments", "[app][cli]") {
+    {
+        char* argv[] = { const_cast<char*>("FlashViewer"), const_cast<char*>("--cpu") };
+        auto opts = fv::parseCommandLine(2, argv);
+        CHECK(opts.cpuMode == true);
+        CHECK(opts.showHelp == false);
+        CHECK(opts.filesToOpen.isEmpty());
+    }
+
+    {
+        char* argv[] = { const_cast<char*>("FlashViewer"), const_cast<char*>("-c"), const_cast<char*>("raster.tif") };
+        auto opts = fv::parseCommandLine(3, argv);
+        CHECK(opts.cpuMode == true);
+        CHECK(opts.filesToOpen.size() == 1);
+        CHECK(opts.filesToOpen.first() == "raster.tif");
+    }
+
+    {
+        char* argv[] = { const_cast<char*>("FlashViewer"), const_cast<char*>("--software-gl") };
+        auto opts = fv::parseCommandLine(2, argv);
+        CHECK(opts.cpuMode == true);
+    }
+
+    {
+        char* argv[] = { const_cast<char*>("FlashViewer"), const_cast<char*>("--help") };
+        auto opts = fv::parseCommandLine(2, argv);
+        CHECK(opts.showHelp == true);
+    }
+
+    {
+        char* argv[] = { const_cast<char*>("FlashViewer"), const_cast<char*>("--version") };
+        auto opts = fv::parseCommandLine(2, argv);
+        CHECK(opts.showVersion == true);
+    }
+}
+
