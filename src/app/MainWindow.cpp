@@ -3215,7 +3215,7 @@ void MainWindow::openLiveSession(const QString& location) {
     // fires once, so auto-disconnecting after that first (and only) firing
     // breaks the cycle instead of leaking the session (background reader
     // thread + gRPC connection included) for the rest of the process.
-    connect(liveDs.get(), &LiveRasterDataset::ready, this, [this, liveDs, session] {
+    connect(liveDs.get(), &LiveRasterDataset::ready, this, [this, liveDs, session, progressDlg] {
         auto layer = std::make_shared<RasterLayer>(liveDs->dataset());
         layer->setName(tr("Live Session"));
         layer->setPaneId(preparePaneForRasterLayer(liveDs->dataset(), layer->name()));
@@ -3318,6 +3318,23 @@ void MainWindow::openLiveSession(const QString& location) {
                 rl->autoStretch();
                 for (int i = 0; i < m_layer_mgr->count(); ++i) {
                     if (m_layer_mgr->layerAt(i) == rl) { m_layer_mgr->notifyLayerChanged(i); break; }
+                }
+                // notifyLayerChanged() alone is NOT enough: MapCanvas's
+                // handler for LayerManager::layerChanged just calls
+                // update() (schedules a repaint of whatever GL textures
+                // TileCache already has resident) -- it does not force the
+                // GPU texture itself to be re-decoded/re-uploaded from the
+                // dataset's now-current bytes. Those textures were first
+                // decoded (and uploaded to the GPU) right when the layer
+                // was added, while the buffer was still all-zero, and
+                // nothing else evicts them -- explicitly invalidate every
+                // pane's copy for this layer, same call the existing
+                // layerAboutToBeRemoved handler already uses elsewhere in
+                // this file, so the next paint genuinely re-reads pixels
+                // instead of re-drawing the stale cached texture with (at
+                // best) a freshly remapped stretch.
+                for (int i = 0; i < m_pane_layout->paneCount(); ++i) {
+                    if (auto* c = m_pane_layout->paneCanvas(i)) c->invalidateLayer(rl->layerId());
                 }
             }
             if (progressDlg) progressDlg->close();

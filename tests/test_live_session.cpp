@@ -15,8 +15,21 @@
 #include "io/RasterDataset.hpp"
 #include "core/RasterLayer.hpp"
 
+#include <QCoreApplication>
+
 #include <cmath>
 #include <vector>
+
+// LiveGeorefSession's signals are connected Qt::QueuedConnection (see
+// LiveRasterDataset::create()'s doc comment -- it emits from a background
+// thread whose QObject affinity is still the GUI thread, so AutoConnection
+// would otherwise pick DirectConnection). A plain emit in a synchronous
+// Catch2 test does NOT run the receiver's slot immediately anymore -- pump
+// the event loop after every emit that a REQUIRE below depends on.
+static void pumpEvents() {
+    QCoreApplication::processEvents();
+    QCoreApplication::processEvents();  // second pass: catches signals re-emitted from within the first batch
+}
 
 using Catch::Matchers::WithinAbs;
 
@@ -53,6 +66,7 @@ TEST_CASE("LiveRasterDataset initializes MEM dataset and updates tiles", "[live]
 
     // Simulate session emitting 'started'
     emit session->started(H, W, bandIds, gt, epsg, QStringLiteral("float32"), 0.0, gen);
+    pumpEvents();
 
     REQUIRE(readyFired);
     auto ds = liveDs->dataset();
@@ -91,6 +105,7 @@ TEST_CASE("LiveRasterDataset initializes MEM dataset and updates tiles", "[live]
     }
 
     emit session->tileReceived(tile1, gen);
+    pumpEvents();
 
     REQUIRE(lastRow0 == 0);
     REQUIRE(lastRow1 == 16);
@@ -117,6 +132,7 @@ TEST_CASE("LiveRasterDataset initializes MEM dataset and updates tiles", "[live]
     }
 
     emit session->tileReceived(tile2, gen);
+    pumpEvents();
 
     REQUIRE(lastRow0 == 16);
     REQUIRE(lastRow1 == 32);
@@ -136,6 +152,7 @@ TEST_CASE("LiveRasterDataset ignores tiles from stale generation", "[live][cance
 
     // Start generation 2
     emit session->started(H, W, bandIds, gt, 0, QStringLiteral("float32"), 0.0, 2);
+    pumpEvents();
 
     auto ds = liveDs->dataset();
     REQUIRE(ds != nullptr);
@@ -154,6 +171,7 @@ TEST_CASE("LiveRasterDataset ignores tiles from stale generation", "[live][cance
     });
 
     emit session->tileReceived(staleTile, 1); // stale gen 1
+    pumpEvents();
 
     // Should be ignored
     REQUIRE(updateCount == 0);
@@ -163,6 +181,7 @@ TEST_CASE("LiveRasterDataset ignores tiles from stale generation", "[live][cance
     LiveTile activeTile = staleTile;
     activeTile.image.assign(H * W, 123.0f);
     emit session->tileReceived(activeTile, 2);
+    pumpEvents();
 
     REQUIRE(updateCount == 1);
     REQUIRE_THAT(readPixel(ds.get(), 5, 5, 1), WithinAbs(123.0, 1e-4));
