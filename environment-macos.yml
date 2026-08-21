@@ -12,6 +12,7 @@ dependencies:
   - glm
   - muparser
   - catch2>=3
+  - libarrow-flight
   - cmake>=3.25
   - ninja
   # Self-contained C++ toolchain for macOS. `cxx-compiler` resolves to the

@@ -18,6 +18,7 @@
 #include <optional>
 #include <string>
 #include <vector>
+#include <unordered_map>
 #include <atomic>
 #include <functional>
 #include <future>
@@ -48,6 +49,8 @@ class SpectralPlotPanel;
 class ScanPixProfilePanel;
 class SnrToolPanel;
 class MtfToolPanel;
+class RpyControlPanel;
+class LiveRasterDataset;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -130,6 +133,8 @@ private:
     void       updateProjectCrsStatus();
     // Open the Project-CRS picker for a pane (gear-menu / clickable status label, Phase 11).
     void       openProjectCrsPicker(MapCanvas* canvas);
+    // Open and bridge a live Arrow Flight georeferencing session
+    void       openLiveSession(const QString& location);
     void       setOsmBasemapEnabled(bool on);
     uint64_t   preparePaneForRasterLayer(const std::shared_ptr<RasterDataset>& ds, const QString& layerName);
     // selectTopLayer: on a pane change, also make the pane's topmost layer active (for a
@@ -290,6 +295,14 @@ private:
     ScanPixProfilePanel*   m_profile_panel{nullptr};
     SnrToolPanel*          m_snr_panel{nullptr};
     MtfToolPanel*          m_mtf_panel{nullptr};
+    RpyControlPanel*       m_rpy_panel{nullptr};
+    std::unordered_map<uint64_t, std::shared_ptr<LiveRasterDataset>> m_live_sessions;
+    // Which live layer m_rpy_panel's Display-section signals (e.g.
+    // displayResamplingChanged) currently apply to -- updated every time a
+    // new live session's layer is added, so the single persistent panel's
+    // connections (made once, see openLiveSession) always affect whichever
+    // session is current rather than a stale one.
+    uint64_t               m_rpy_active_layer_id{0};
 
     /// Show, raise and focus a plot window, restoring its saved geometry the first time.
     void showPlotWindow(QWidget* w, const QString& key);

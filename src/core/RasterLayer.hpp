@@ -150,6 +150,17 @@ public:
         return m_ds ? m_ds->readFullPreview(maxSize) : TileBuffer{};
     }
 
+    // Re-run the same 1/99-percentile stretch the constructor computes.
+    // Public (unlike the identical logic switchSubdataset() triggers
+    // internally) specifically for a live Arrow Flight session: the
+    // constructor's own autoStretch() call runs against the MEM dataset's
+    // still-all-zero buffer (LiveRasterDataset::onStarted() zero-fills it
+    // before any tile has arrived), producing a degenerate stretch that
+    // falls back to [0,1] -- real DN values then clip to solid white. Call
+    // this again once real pixel data has actually landed (see
+    // MainWindow::openLiveSession's LiveGeorefSession::finished handler).
+    void autoStretch();
+
 private:
     std::shared_ptr<RasterDataset> m_ds;
     BandMapping m_bands;
@@ -185,5 +196,4 @@ private:
     uint64_t    m_layer_id;
 
     static std::atomic<uint64_t> s_next_id;
-    void autoStretch();
 };

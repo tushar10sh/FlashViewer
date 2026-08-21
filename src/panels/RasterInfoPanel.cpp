@@ -146,6 +146,17 @@ void RasterInfoPanel::setLayerManager(LayerManager* mgr) {
             this, &RasterInfoPanel::onActiveLayerChanged);
     connect(m_mgr, &LayerManager::layerAdded,
             this, [this](int idx){ onActiveLayerChanged(idx); });
+    // A live Arrow Flight session's bandStats() are cached against an
+    // all-zero MEM buffer at layerAdded time (before any tile has arrived)
+    // and only become correct later, once
+    // MainWindow::openLiveSession's LiveGeorefSession::finished handler
+    // calls RasterDataset::invalidateStatsCache() and notifyLayerChanged() --
+    // without this connection (unlike HistogramPanel, which already has it)
+    // that later notifyLayerChanged() had nothing to make this panel
+    // actually re-read the now-valid stats, so it kept showing the stale
+    // all-zero snapshot from layerAdded indefinitely.
+    connect(m_mgr, &LayerManager::layerChanged,
+            this, &RasterInfoPanel::onActiveLayerChanged);
     clearDisplay();
 }
 

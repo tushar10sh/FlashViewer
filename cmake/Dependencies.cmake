@@ -45,4 +45,33 @@ else()
     endif()
 endif()
 
+# ---------------------------------------------------------------------------
+# Apache Arrow / Arrow Flight (live Arrow Flight georeferencing session --
+# see src/live/, docs/LIVE_GEOREF_DEV_PLAN.md). Requires an Arrow C++ build
+# with Flight enabled (conda-forge's `libarrow-flight` / `arrow-cpp` with
+# ARROW_FLIGHT=ON, or Homebrew's `apache-arrow` + `apache-arrow-flight` on
+# recent formulae -- verify Flight is actually compiled in, it is NOT
+# enabled by every distro's default Arrow package).
+# ---------------------------------------------------------------------------
+find_package(Arrow CONFIG QUIET)
+find_package(ArrowFlight CONFIG QUIET)
+if(TARGET arrow_shared AND TARGET arrow_flight_shared)
+    set(FV_ARROW_TARGETS arrow_shared arrow_flight_shared)
+    message(STATUS "FlashViewer: Arrow/Arrow Flight via cmake config (arrow_shared, arrow_flight_shared)")
+elseif(TARGET Arrow::arrow_shared AND TARGET ArrowFlight::arrow_flight_shared)
+    set(FV_ARROW_TARGETS Arrow::arrow_shared ArrowFlight::arrow_flight_shared)
+    message(STATUS "FlashViewer: Arrow/Arrow Flight via cmake config (Arrow::/ArrowFlight:: namespaced targets)")
+else()
+    message(FATAL_ERROR
+        "Apache Arrow C++ with Flight not found.\n"
+        "  conda (recommended, all platforms): conda install -c conda-forge libarrow-flight\n"
+        "  macOS:   brew install apache-arrow apache-arrow-flight\n"
+        "  Linux:   see https://arrow.apache.org/install/ for your distro's apt/yum repo\n"
+        "  The exact CMake target names (arrow_shared/Arrow::arrow_shared,\n"
+        "  arrow_flight_shared/ArrowFlight::arrow_flight_shared) vary by how Arrow was\n"
+        "  packaged -- if this still fails after installing, run\n"
+        "  `find_package(Arrow CONFIG)` by hand / inspect the installed ArrowConfig.cmake\n"
+        "  and adjust FV_ARROW_TARGETS above to match.")
+endif()
+
 qt_standard_project_setup()

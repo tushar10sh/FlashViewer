@@ -75,6 +75,9 @@ add_executable(flashviewer_tests
     test_system_metrics.cpp
     test_snr_mtf_filter.cpp
 
+    # Live Arrow Flight Georeferencing
+    test_live_session.cpp
+
     # Shared test harnesses / fixtures
     fixtures/FixtureFactory.cpp
     harness/GdalOracle.cpp
@@ -130,6 +133,9 @@ add_executable(flashviewer_tests
     "${CMAKE_SOURCE_DIR}/src/util/ErrorReporter.cpp"
     "${CMAKE_SOURCE_DIR}/src/util/PerfMetrics.cpp"
     "${CMAKE_SOURCE_DIR}/src/util/SystemMetrics.cpp"
+    "${CMAKE_SOURCE_DIR}/src/live/LiveRasterDataset.cpp"
+    "${CMAKE_SOURCE_DIR}/src/live/LiveGeorefSession.cpp"
+    "${CMAKE_SOURCE_DIR}/src/panels/RpyControlPanel.cpp"
 )
 
 # Phase 12 — mirror the app's instrumentation gate so the perf lane can build the
@@ -174,6 +180,7 @@ target_link_libraries(flashviewer_tests PRIVATE
     nlohmann_json::nlohmann_json
     ${FV_GDAL_TARGET}
     ${FV_MUPARSER_TARGET}
+    ${FV_ARROW_TARGETS}
 )
 
 set_target_properties(flashviewer_tests PROPERTIES

@@ -72,6 +72,40 @@ public:
     bool hasOverviews(int band_1based = 1) const;
     int  overviewCount(int band_1based = 1) const;
 
+    // Build IN-MEMORY overview levels (GDALDataset::BuildOverviews -- the
+    // MEM driver allocates each overview as its own additional in-memory
+    // band, no external .ovr file) using the same level-selection helper
+    // PyramidBuilder already uses for static files
+    // (PyramidBuilder::computeOverviewLevels). "NEAREST" default matches
+    // DN-preserving display for typically-integer sensor imagery; pass
+    // "AVERAGE" for smoother continuous data.
+    //
+    // For a live Arrow Flight session's MEM dataset specifically: without
+    // this, EVERY decimated read at ANY zoom level (readTile -> readRegion
+    // -> RasterIO with dstW/dstH < source size) has no overview to pick
+    // from and falls through to GDAL's generic block-cache-based resampling
+    // path -- slow, AND (per RasterDataset::flushCache()'s doc comment) the
+    // path that produces per-zoom-level stale-block caching (each zoom
+    // level's distinct decimation ratio samples a different row subset,
+    // independently cacheable stale-or-fresh) that presents as "renders
+    // correctly at some zoom levels, blank/stale at others." Building real
+    // overviews once real pixel data has landed (see
+    // MainWindow::openLiveSession's LiveGeorefSession::finished handler,
+    // called there alongside flushCache()/invalidateStatsCache()) gives
+    // every zoom level an appropriately-pre-decimated source to read
+    // directly, sidestepping that whole class of problem rather than
+    // relying on cache invalidation to keep up with it.
+    //
+    // BUILD NOTE: relies on the MEM driver's BuildOverviews support
+    // producing genuinely in-memory overview bands (no external file) --
+    // this is documented, commonly-used GDAL MEM driver behavior, but has
+    // not been exercised against a real GDAL build in the environment that
+    // authored this. Returns false (logs a warning) on failure rather than
+    // throwing; callers should treat failure as non-fatal (worse zoom
+    // performance/staleness, not broken rendering, given flushCache() is
+    // still called regardless).
+    bool buildOverviews(const std::string& resampling = "NEAREST");
+
     // FR-CAP-3: true when the raster carries data FlashViewer cannot faithfully
     // represent in its real-valued Float32 pipeline (currently: complex bands, whose
     // imaginary part is dropped). Set at open(); a warning is also logged. Queryable so
@@ -142,6 +176,62 @@ public:
 
     struct BandStats { double min{0}, max{0}, mean{0}, stddev{0}; };
     BandStats bandStats(int band_1based) const;
+
+    // Drop cached bandStats() results so the next call recomputes from the
+    // dataset's CURRENT contents. bandStats() caches forever on first call
+    // (m_stats_cache) with no other invalidation path -- fine for a static
+    // file, wrong for a live Arrow Flight session's MEM dataset: whatever
+    // called bandStats() first (e.g. RasterInfoPanel/LayerSettingsDialog)
+    // typically runs right after the layer is added, before any tile has
+    // written real pixels, permanently caching degenerate all-zero stats.
+    // Call this once real data has landed (see
+    // MainWindow::openLiveSession's LiveGeorefSession::finished handler,
+    // paired with RasterLayer::autoStretch() for the same reason).
+    void invalidateStatsCache();
+
+    // Force GDAL to drop any cached raster blocks for this dataset (calls
+    // GDALDataset::FlushCache()), so the NEXT RasterIO/ComputeStatistics
+    // call re-reads from the underlying storage instead of a stale cached
+    // block. Necessary (in addition to invalidateStatsCache() and
+    // RasterLayer::autoStretch()) for a live Arrow Flight session's MEM
+    // dataset: LiveRasterDataset::onTileReceived writes real pixel data via
+    // a raw memcpy directly into the buffer the MEM driver aliases,
+    // entirely bypassing GDAL's own write API -- GDAL has no way to know
+    // the underlying memory changed, so any block it already cached (e.g.
+    // from the all-zero buffer a DECIMATED preview read, like
+    // computeStretchPercentile's, may have cached via the generic
+    // block-cache-based IRasterIO path MEMRasterBand falls back to for
+    // resampled/decimated requests) keeps being served stale until
+    // something else evicts it. Symptom without this: bandStats()/
+    // computeStretchPercentile() keep returning the original all-zero
+    // reading even after invalidateStatsCache()+autoStretch() are re-run,
+    // until enough OTHER reads (e.g. zooming/panning, which touch different
+    // blocks) evict the stale entries via normal LRU cache pressure --
+    // "starts showing real data after a while, once you zoom in and out."
+    // Call this BEFORE invalidateStatsCache()/autoStretch() so those re-runs
+    // actually see fresh data.
+    //
+    // BUILD NOTE: written against GDAL's current FlushCache(bool
+    // bAtClosing = false) signature (CPLErr return, GDAL 3.7+); older GDAL
+    // has a bare `void FlushCache()` with no argument -- adjust the call
+    // site in the .cpp if this doesn't compile against the installed GDAL
+    // version. Not compiled/verified in the environment that authored it.
+    void flushCache();
+
+    // Set a real GDAL NoData value on every band (GDALRasterBand::SetNoDataValue),
+    // not just FlashViewer's own m_nodata_cache reporting -- so GDAL's OWN
+    // ComputeStatistics()/RasterIO nodata-exclusion behaves correctly too,
+    // not just noData()'s cached return value. For a live Arrow Flight
+    // session's MEM dataset there is otherwise NO NoData value at all (the
+    // MEM driver doesn't set one by default), so out-of-swath pixels (a
+    // real fraction of any georeferenced swath -- e.g. ~34% for a typical
+    // LISS-3 scene in its north-up bounding box) get treated as valid 0.0
+    // data in every stat/stretch/render computation instead of being
+    // excluded. Call once, right after open() (see
+    // LiveRasterDataset::onStarted, using the "start" message's
+    // nodata_value field -- see GeoreferencerConfig.output_nodata_value /
+    // EngineOutput.nodata_value on the Python side).
+    void setNoDataOverride(double value);
 
     struct NoDataInfo { bool has_value{false}; double value{0.0}; };
     NoDataInfo noData(int band_1based) const;

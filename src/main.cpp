@@ -1,6 +1,7 @@
 #include "app/Application.hpp"
 #include "app/MainWindow.hpp"
 #include "app/CommandLineOptions.hpp"
+#include "live/LiveGeorefSession.hpp"
 #include "render/SurfaceFormat.hpp"
 #include "util/Logger.hpp"
 
@@ -33,6 +34,9 @@ int main(int argc, char* argv[]) {
     // widget context in one share group — the Qt-recommended setup for multiple QOpenGLWidgets.
     // Must be set BEFORE the QApplication is constructed.
     QCoreApplication::setAttribute(Qt::AA_ShareOpenGLContexts);
+
+    qRegisterMetaType<LiveTile>("LiveTile");
+    qRegisterMetaType<QVector<double>>("QVector<double>");
 
     Application app(argc, argv);
 

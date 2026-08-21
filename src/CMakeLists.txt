@@ -41,6 +41,10 @@ qt_add_executable(FlashViewer
     io/UrlGuard.hpp         io/UrlGuard.cpp
     io/OsmTileProvider.hpp  io/OsmTileProvider.cpp
 
+    # Live Arrow Flight georeferencing session (see docs/LIVE_GEOREF_DEV_PLAN.md)
+    live/LiveGeorefSession.hpp   live/LiveGeorefSession.cpp
+    live/LiveRasterDataset.hpp   live/LiveRasterDataset.cpp
+
     # Rendering
     render/GlslProgram.hpp      render/GlslProgram.cpp
     render/GlslProgramCache.hpp render/GlslProgramCache.cpp
@@ -88,6 +92,7 @@ qt_add_executable(FlashViewer
     panels/VectorLayerPanel.hpp     panels/VectorLayerPanel.cpp
     panels/SnrToolPanel.hpp         panels/SnrToolPanel.cpp
     panels/MtfToolPanel.hpp         panels/MtfToolPanel.cpp
+    panels/RpyControlPanel.hpp      panels/RpyControlPanel.cpp
 
     # Plots
     plots/SpectralPlotPanel.hpp    plots/SpectralPlotPanel.cpp
@@ -173,11 +178,12 @@ target_include_directories(FlashViewer PRIVATE
     "${CMAKE_BINARY_DIR}/generated"
 )
 
-# FV_GDAL_TARGET and FV_MUPARSER_TARGET are set in cmake/Dependencies.cmake
+# FV_GDAL_TARGET, FV_MUPARSER_TARGET, FV_ARROW_TARGETS are set in cmake/Dependencies.cmake
 target_link_libraries(FlashViewer PRIVATE
     Qt6::Core Qt6::Widgets Qt6::OpenGL Qt6::OpenGLWidgets Qt6::Charts Qt6::Network Qt6::Svg
     ${FV_GDAL_TARGET}
     ${FV_MUPARSER_TARGET}
+    ${FV_ARROW_TARGETS}
     spdlog::spdlog
     nlohmann_json::nlohmann_json
     glm::glm

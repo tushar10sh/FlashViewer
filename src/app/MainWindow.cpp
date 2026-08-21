@@ -11,6 +11,9 @@
 #include "plots/PlotWindowChrome.hpp"   // fvApplyPlotWindowFlags — what kind of window a plot is
 #include "panels/SnrToolPanel.hpp"
 #include "panels/MtfToolPanel.hpp"
+#include "panels/RpyControlPanel.hpp"
+#include "live/LiveGeorefSession.hpp"
+#include "live/LiveRasterDataset.hpp"
 #include "render/MapCanvas.hpp"
 #include "render/PaneLayout.hpp"
 #include "core/Layer.hpp"             // kDefaultPaneId
@@ -808,6 +811,16 @@ void MainWindow::setupMenuBar() {
         ErrorReporter::runGuarded("Open URL", [&] { openFiles({url}); });
     });
 
+    auto* actLiveSession = fileMenu->addAction(tr("Connect &Live Session…"));
+    connect(actLiveSession, &QAction::triggered, this, [this] {
+        bool ok;
+        QString location = QInputDialog::getText(this, tr("Connect Live Georeferencing Session"),
+            tr("Enter Flight server address (grpc://host:port):"), QLineEdit::Normal,
+            QStringLiteral("grpc://localhost:8815"), &ok);
+        if (!ok || location.isEmpty()) return;
+        ErrorReporter::runGuarded("Connect Live Session", [&] { openLiveSession(location); });
+    });
+
     fileMenu->addSeparator();
 
     auto* actTileSource = fileMenu->addAction(tr("OSM &Tile Source…"));
@@ -1556,6 +1569,7 @@ void MainWindow::setupDocks() {
         for (const auto& f : rl_removed->tempSidecars())
             m_pending_temp_deletions << QString::fromStdString(f);
         const uint64_t id = rl_removed->layerId();
+        m_live_sessions.erase(id);
         for (int i = 0; i < m_pane_layout->paneCount(); ++i)
             if (auto* c = m_pane_layout->paneCanvas(i)) c->invalidateLayer(id);
         // If the removed layer is its pane's active/representative layer, the Pixel
@@ -3147,6 +3161,137 @@ void MainWindow::openVectorFiles(const QStringList& paths, uint64_t targetPaneId
     }
     if (m_canvas) m_canvas->update();
 }
+
+void MainWindow::openLiveSession(const QString& location) {
+    auto session = std::make_shared<LiveGeorefSession>(location);
+    QString err;
+    if (!session->connectToServer(&err)) {
+        QMessageBox::warning(this, tr("Connection Failed"),
+                             err.isEmpty() ? tr("Could not connect to Flight server at %1").arg(location) : err);
+        return;
+    }
+    auto liveDs = LiveRasterDataset::create(session);
+    // Qt::SingleShotConnection: without it, this lambda's own shared_ptr
+    // captures (liveDs, session) form a reference cycle -- liveDs keeps this
+    // connection alive (it's the sender), the connection keeps the lambda
+    // alive, the lambda holds a shared_ptr back to liveDs. ready() only ever
+    // fires once, so auto-disconnecting after that first (and only) firing
+    // breaks the cycle instead of leaking the session (background reader
+    // thread + gRPC connection included) for the rest of the process.
+    connect(liveDs.get(), &LiveRasterDataset::ready, this, [this, liveDs, session] {
+        auto layer = std::make_shared<RasterLayer>(liveDs->dataset());
+        layer->setName(tr("Live Session"));
+        layer->setPaneId(preparePaneForRasterLayer(liveDs->dataset(), layer->name()));
+        const uint64_t id = layer->layerId();
+        m_layer_mgr->addLayer(layer);
+        m_live_sessions[id] = liveDs;
+        m_rpy_active_layer_id = id;
+
+        auto findLiveLayer = [this, id]() -> std::shared_ptr<RasterLayer> {
+            for (int i = 0; i < m_layer_mgr->count(); ++i) {
+                if (auto l = m_layer_mgr->layerAt(i)) {
+                    if (auto rl = std::dynamic_pointer_cast<RasterLayer>(l); rl && rl->layerId() == id) {
+                        return rl;
+                    }
+                }
+            }
+            return nullptr;
+        };
+
+        // Deliberately NOT wired to notifyLayerChanged during load: Milestone-1
+        // servers send the whole scene as one batch of tiles (see
+        // TrimsFlightServer.do_exchange), so redrawing on every regionUpdated
+        // (up to several dozen times per scene) buys no visible progressive-
+        // render benefit yet, but DOES race the still-in-flight background
+        // writes -- notifyLayerChanged kicks off an async decode/GL-upload
+        // that reads the MEM buffer via GDAL RasterIO, which takes no lock on
+        // m_buffer_mutex (GDAL has no idea it exists), against a buffer
+        // onTileReceived is concurrently memcpy-ing into. With ~dozens of
+        // overlapping invalidations firing across a load, different screen
+        // tiles' decodes land at different (arbitrary) snapshots of "how much
+        // has been written so far," and nothing forces a final consistent
+        // redraw once loading settles -- producing a lasting stale-vs-fresh
+        // banding pattern across the image (reported after connecting to a
+        // 9876-row real scene). Re-enable per-tile redraws only once there is
+        // a real progressive-preview use case (Milestone 2+) AND the MEM
+        // buffer has proper read/write synchronization to make it safe.
+        //
+        // RasterLayer's constructor just ran autoStretch() against
+        // liveDs->dataset()'s still-all-zero buffer (no tile has arrived
+        // yet), so its stretch is the degenerate [0,1] fallback -- see
+        // RasterLayer::autoStretch()'s doc comment. Re-run it once real
+        // pixel data has actually landed (Milestone-1 servers are one-shot,
+        // so "finished" == "all tiles received").
+        connect(session.get(), &LiveGeorefSession::finished, this, [this, findLiveLayer](int) {
+            if (auto rl = findLiveLayer()) {
+                if (auto ds = rl->datasetPtr()) {
+                    // MUST run before autoStretch()/invalidateStatsCache()
+                    // below: those only clear FlashViewer's OWN caches, not
+                    // GDAL's internal raster block cache, which still holds
+                    // whatever it cached from the all-zero buffer at layer-
+                    // add time (onTileReceived's writes bypass GDAL's I/O
+                    // layer entirely -- see RasterDataset::flushCache()'s
+                    // doc comment for the full mechanism). Without this,
+                    // the recompute below just re-reads the same stale
+                    // cached blocks and still returns the degenerate result.
+                    ds->flushCache();
+                    // Give every zoom level a real pre-decimated source to
+                    // read instead of relying on GDAL's slow generic
+                    // resampling (+ its per-zoom-level stale-block-caching
+                    // failure mode) for coarse zooms -- see
+                    // RasterDataset::buildOverviews()'s doc comment. Runs
+                    // AFTER flushCache() so it builds from the real,
+                    // now-current pixel data, not whatever was cached
+                    // during load.
+                    ds->buildOverviews(m_rpy_panel
+                        ? m_rpy_panel->overviewResampleMethod().toStdString() : "NEAREST");
+                    ds->invalidateStatsCache();
+                }
+                rl->autoStretch();
+                for (int i = 0; i < m_layer_mgr->count(); ++i) {
+                    if (m_layer_mgr->layerAt(i) == rl) { m_layer_mgr->notifyLayerChanged(i); break; }
+                }
+            }
+        });
+
+        if (!m_rpy_panel) {
+            m_rpy_panel = new RpyControlPanel(this);
+            fvApplyPlotWindowFlags(m_rpy_panel);
+            m_rpy_panel->setWindowTitle(tr("Live Georeferencing Control"));
+            m_rpy_panel->resize(420, 540);
+            // Connected ONCE (the panel is created once and reused across
+            // sessions) -- looks up m_rpy_active_layer_id at signal-fire
+            // time rather than capturing this session's `id`/findLiveLayer,
+            // so it always affects whichever live session is CURRENT, not
+            // whichever one happened to be active when the panel was first
+            // created. Applies immediately (see RpyControlPanel::
+            // displayResamplingChanged's doc comment): no reload/rebuild,
+            // it's a texture-sampling filter mode read at paint time.
+            connect(m_rpy_panel, &RpyControlPanel::displayResamplingChanged, this, [this](QString method) {
+                for (int i = 0; i < m_layer_mgr->count(); ++i) {
+                    auto l = m_layer_mgr->layerAt(i);
+                    if (!l) continue;
+                    auto rl = std::dynamic_pointer_cast<RasterLayer>(l);
+                    if (!rl || rl->layerId() != m_rpy_active_layer_id) continue;
+                    auto dr = RasterLayer::DisplayResampling::Bilinear;
+                    if (method == QStringLiteral("bicubic2")) dr = RasterLayer::DisplayResampling::Bicubic2;
+                    else if (method == QStringLiteral("bicubic4")) dr = RasterLayer::DisplayResampling::Bicubic4;
+                    rl->setDisplayResampling(dr);
+                    m_layer_mgr->notifyLayerChanged(i);
+                    break;
+                }
+            });
+        }
+        m_rpy_panel->setSession(session);
+        m_rpy_panel->show();
+        m_rpy_panel->raise();
+        m_rpy_panel->activateWindow();
+    }, Qt::SingleShotConnection);
+    connect(liveDs.get(), &LiveRasterDataset::sessionError, this, [this](QString msg) {
+        QMessageBox::warning(this, tr("Live Session Error"), msg);
+    });
+}
+
 
 void MainWindow::setOsmBasemapEnabled(bool on) {
     const std::string osmCrsWkt = fvGetEpsgWkt(3857);

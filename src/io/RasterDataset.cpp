@@ -1,4 +1,5 @@
 #include "io/RasterDataset.hpp"
+#include "io/PyramidBuilder.hpp"
 #include "gis/GeoTransform4326.hpp"
 #include "util/Logger.hpp"
 #include "util/Percentile.hpp"
@@ -575,6 +576,46 @@ RasterDataset::BandStats RasterDataset::bandStats(int band_1based) const {
     return st;
 }
 
+void RasterDataset::invalidateStatsCache() {
+    std::lock_guard lock(m_mutex);
+    for (auto& entry : m_stats_cache) entry.reset();
+}
+
+void RasterDataset::flushCache() {
+    std::lock_guard lock(m_mutex);
+    if (!m_ds) return;
+    m_ds->FlushCache(false);
+}
+
+bool RasterDataset::buildOverviews(const std::string& resampling) {
+    std::lock_guard lock(m_mutex);
+    if (!m_ds) return false;
+
+    auto levels = PyramidBuilder::computeOverviewLevels(m_width, m_height);
+    if (levels.empty()) return true;  // small enough that no overviews are needed
+
+    const CPLErr err = m_ds->BuildOverviews(
+        resampling.c_str(), static_cast<int>(levels.size()), levels.data(),
+        0, nullptr, nullptr, nullptr);
+    if (err != CE_None) {
+        FV_WARN("RasterDataset::buildOverviews failed for '{}' (err={})", m_path, static_cast<int>(err));
+        return false;
+    }
+    FV_DEBUG("RasterDataset::buildOverviews: built {} levels for '{}'", levels.size(), m_path);
+    return true;
+}
+
+void RasterDataset::setNoDataOverride(double value) {
+    std::lock_guard lock(m_mutex);
+    if (!m_ds) return;
+    for (int b = 1; b <= m_band_count; ++b) {
+        GDALRasterBand* band = m_ds->GetRasterBand(b);
+        if (!band) continue;
+        band->SetNoDataValue(value);
+        m_nodata_cache[static_cast<size_t>(b - 1)] = {true, value};
+    }
+}
+
 std::pair<float, float> RasterDataset::computeStretchPercentile(
     int band_1based, double lo_pct, double hi_pct) const
 {
@@ -588,8 +629,12 @@ std::pair<float, float> RasterDataset::computeStretchPercentile(
         dstH = std::max(1, static_cast<int>(dstH * f));
     }
     TileBuffer buf = readRegion(0, 0, m_width, m_height, dstW, dstH, {band_1based});
-    if (!buf.isValid() || buf.bands < 1)
+    if (!buf.isValid() || buf.bands < 1) {
+        FV_DEBUG("computeStretchPercentile band {}: readRegion({}x{} decimated from {}x{}) "
+                 "returned {}", band_1based, dstW, dstH, m_width, m_height,
+                 buf.isValid() ? "0 bands" : "invalid buffer");
         return {0.0f, 1.0f};
+    }
 
     NoDataInfo nd = noData(band_1based);
     const float* src = buf.bandPtr(0);
@@ -602,6 +647,18 @@ std::pair<float, float> RasterDataset::computeStretchPercentile(
         if (!std::isfinite(v)) continue;
         if (nd.has_value && std::abs(static_cast<double>(v) - nd.value) < 1e-6) continue;
         vals.push_back(v);
+    }
+    // Diagnostic for the "MEM live session reads all-zero stats despite real
+    // pixel-inspect values" investigation: pins down whether the decimated
+    // readRegion() call itself returned real data (rawMin/rawMax over ALL n
+    // samples, before the nodata filter) or whether the nodata filter is
+    // discarding everything that got read.
+    if (n > 0) {
+        float rawMin = src[0], rawMax = src[0];
+        for (int i = 1; i < n; ++i) { rawMin = std::min(rawMin, src[i]); rawMax = std::max(rawMax, src[i]); }
+        FV_DEBUG("computeStretchPercentile band {}: n={} valid={} nd.has_value={} nd.value={:.3f} "
+                 "raw[min={:.3f},max={:.3f}]", band_1based, n, vals.size(), nd.has_value, nd.value,
+                 rawMin, rawMax);
     }
     if (vals.empty()) return {0.0f, 1.0f};
 
