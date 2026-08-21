@@ -1,5 +1,4 @@
 #include "io/OsmTileProvider.hpp"
-#include "io/UrlGuard.hpp"
 #include "util/Logger.hpp"
 
 #include <QNetworkRequest>
@@ -30,12 +29,11 @@ bool OsmTileProvider::validateUrlTemplate(const QString& url, QString* errorReas
         return false;
     }
 
-    // Check sample URL with UrlGuard for SSRF protection
     QString sampleUrl = trimmed;
     sampleUrl.replace("{z}", "0").replace("{x}", "0").replace("{y}", "0");
-    UrlGuard::Result guard = UrlGuard::check(sampleUrl.toStdString());
-    if (!guard.ok) {
-        if (errorReason) *errorReason = tr("Security check failed: %1").arg(guard.reason);
+    QUrl parsedUrl(sampleUrl);
+    if (!parsedUrl.isValid() || parsedUrl.host().isEmpty()) {
+        if (errorReason) *errorReason = tr("URL format is invalid or host is missing.");
         return false;
     }
 

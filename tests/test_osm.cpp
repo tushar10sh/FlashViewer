@@ -192,6 +192,22 @@ TEST_CASE("OsmTileProvider validates tile URL templates correctly", "[osm][valid
     REQUIRE(OsmTileProvider::validateUrlTemplate("http://a.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png", &reason));
     REQUIRE(reason.isEmpty());
 
+    // Local and airgapped deployment templates (localhost, private network IPs, local hostnames)
+    REQUIRE(OsmTileProvider::validateUrlTemplate("http://localhost:8080/tile/{z}/{x}/{y}.png", &reason));
+    REQUIRE(reason.isEmpty());
+
+    REQUIRE(OsmTileProvider::validateUrlTemplate("http://127.0.0.1:8080/styles/osm-bright/{z}/{x}/{y}.png", &reason));
+    REQUIRE(reason.isEmpty());
+
+    REQUIRE(OsmTileProvider::validateUrlTemplate("http://192.168.1.50:8080/{z}/{x}/{y}.png", &reason));
+    REQUIRE(reason.isEmpty());
+
+    REQUIRE(OsmTileProvider::validateUrlTemplate("http://10.0.0.1:8080/tiles/{z}/{x}/{y}.png", &reason));
+    REQUIRE(reason.isEmpty());
+
+    REQUIRE(OsmTileProvider::validateUrlTemplate("http://tileserver.local/osm/{z}/{x}/{y}.png", &reason));
+    REQUIRE(reason.isEmpty());
+
     // Empty URL
     REQUIRE_FALSE(OsmTileProvider::validateUrlTemplate("", &reason));
     REQUIRE_FALSE(reason.isEmpty());
@@ -204,12 +220,7 @@ TEST_CASE("OsmTileProvider validates tile URL templates correctly", "[osm][valid
     // Invalid schemes
     REQUIRE_FALSE(OsmTileProvider::validateUrlTemplate("ftp://tile.openstreetmap.org/{z}/{x}/{y}.png", &reason));
     REQUIRE_FALSE(OsmTileProvider::validateUrlTemplate("file:///path/{z}/{x}/{y}.png", &reason));
-
-    // SSRF blocked addresses
-    REQUIRE_FALSE(OsmTileProvider::validateUrlTemplate("http://127.0.0.1/{z}/{x}/{y}.png", &reason));
-    REQUIRE_FALSE(OsmTileProvider::validateUrlTemplate("http://192.168.1.1/{z}/{x}/{y}.png", &reason));
-    REQUIRE_FALSE(OsmTileProvider::validateUrlTemplate("http://10.0.0.1/{z}/{x}/{y}.png", &reason));
-    REQUIRE_FALSE(OsmTileProvider::validateUrlTemplate("http://169.254.169.254/{z}/{x}/{y}.png", &reason));
+    REQUIRE_FALSE(OsmTileProvider::validateUrlTemplate("gopher://tile.openstreetmap.org/{z}/{x}/{y}.png", &reason));
 }
 
 TEST_CASE("OsmTileProvider connection test rejects invalid URLs fast", "[osm][connection]") {
@@ -217,8 +228,9 @@ TEST_CASE("OsmTileProvider connection test rejects invalid URLs fast", "[osm][co
     REQUIRE_FALSE(res1.ok);
     REQUIRE_FALSE(res1.errorString.isEmpty());
 
-    auto res2 = OsmTileProvider::testConnection("http://127.0.0.1/{z}/{x}/{y}.png", 100);
+    auto res2 = OsmTileProvider::testConnection("https://tile.openstreetmap.org/{z}/{x}.png", 100);
     REQUIRE_FALSE(res2.ok);
     REQUIRE_FALSE(res2.errorString.isEmpty());
 }
+
 
