@@ -2,6 +2,7 @@
 #include "core/GeoTransform.hpp"
 #include "core/Extent.hpp"
 
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -104,7 +105,15 @@ public:
     // throwing; callers should treat failure as non-fatal (worse zoom
     // performance/staleness, not broken rendering, given flushCache() is
     // still called regardless).
-    bool buildOverviews(const std::string& resampling = "NEAREST");
+    //
+    // progressCb: optional, called with fraction-complete in [0,1] (same
+    // shape as PyramidBuilder::ProgressFn, whose gdalProgressBridge this
+    // mirrors) -- return false to cancel. For a real multi-thousand-line
+    // scene this is not instant; callers driving a progress dialog (see
+    // MainWindow::openLiveSession) should use it rather than showing an
+    // indeterminate spinner for the whole call.
+    using ProgressFn = std::function<bool(double fraction)>;
+    bool buildOverviews(const std::string& resampling = "NEAREST", ProgressFn progressCb = nullptr);
 
     // FR-CAP-3: true when the raster carries data FlashViewer cannot faithfully
     // represent in its real-valued Float32 pipeline (currently: complex bands, whose

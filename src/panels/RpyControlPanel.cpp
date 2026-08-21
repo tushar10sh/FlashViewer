@@ -210,8 +210,14 @@ void RpyControlPanel::setSession(std::shared_ptr<LiveGeorefSession> session) {
     m_session = std::move(session);
     setEnabled(m_session != nullptr);
     if (!m_session) return;
-    connect(m_session.get(), &LiveGeorefSession::progressUpdated, this, &RpyControlPanel::onProgressUpdated);
-    connect(m_session.get(), &LiveGeorefSession::finished, this, &RpyControlPanel::onSessionFinished);
+    // Qt::QueuedConnection: see LiveRasterDataset::create()'s comment --
+    // LiveGeorefSession emits from a background thread whose QObject
+    // affinity is still the GUI thread, so AutoConnection would otherwise
+    // pick DirectConnection and run these slots off the GUI thread.
+    connect(m_session.get(), &LiveGeorefSession::progressUpdated,
+            this, &RpyControlPanel::onProgressUpdated, Qt::QueuedConnection);
+    connect(m_session.get(), &LiveGeorefSession::finished,
+            this, &RpyControlPanel::onSessionFinished, Qt::QueuedConnection);
     m_status_label->setText(tr("Connected"));
 }
 

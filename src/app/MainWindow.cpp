@@ -28,6 +28,7 @@
 #include "io/UrlGuard.hpp"
 #include "io/OsmTileProvider.hpp"
 #include <QProgressDialog>
+#include <QPointer>
 #include <QMessageBox>
 #include <QFontDatabase>
 #include "util/Logger.hpp"
@@ -3170,6 +3171,42 @@ void MainWindow::openLiveSession(const QString& location) {
                              err.isEmpty() ? tr("Could not connect to Flight server at %1").arg(location) : err);
         return;
     }
+
+    // Modal progress dialog for the whole connect->receive->post-process
+    // pipeline, matching the existing "Building Pyramids"/runWithCancelDialog
+    // convention elsewhere in this file (QProgressDialog + Qt::ApplicationModal
+    // locks input to the rest of the app while shown). QPointer so every
+    // lambda below can safely capture it by value even across the dialog's
+    // own eventual close()/deleteLater().
+    QPointer<QProgressDialog> progressDlg = new QProgressDialog(
+        tr("Waiting for scene metadata..."), tr("Cancel"), 0, 0, this);
+    progressDlg->setAttribute(Qt::WA_DeleteOnClose);   // else close() only hides it, accumulating one per connect
+    progressDlg->setWindowTitle(tr("Live Georeferencing Session"));
+    progressDlg->setWindowModality(Qt::ApplicationModal);
+    progressDlg->setMinimumDuration(0);
+    progressDlg->setValue(0);
+    connect(progressDlg.data(), &QProgressDialog::canceled, this, [session] {
+        session->disconnectFromServer();
+    });
+
+    auto totalRows = std::make_shared<int>(0);
+    // Qt::QueuedConnection: see LiveRasterDataset::create()'s comment --
+    // session emits these from its background reader thread.
+    connect(session.get(), &LiveGeorefSession::started, this,
+            [progressDlg, totalRows](int H, int, QStringList, QVector<double>, int, QString, double) {
+        if (!progressDlg) return;
+        *totalRows = H;
+        progressDlg->setLabelText(tr("Receiving tiles... (0 / %1 rows)").arg(H));
+        progressDlg->setRange(0, H);
+        progressDlg->setValue(0);
+    }, Qt::QueuedConnection);
+    connect(session.get(), &LiveGeorefSession::tileReceived, this,
+            [progressDlg, totalRows](LiveTile tile, int) {
+        if (!progressDlg) return;
+        progressDlg->setLabelText(tr("Receiving tiles... (%1 / %2 rows)").arg(tile.row1).arg(*totalRows));
+        progressDlg->setValue(tile.row1);
+    }, Qt::QueuedConnection);
+
     auto liveDs = LiveRasterDataset::create(session);
     // Qt::SingleShotConnection: without it, this lambda's own shared_ptr
     // captures (liveDs, session) form a reference cycle -- liveDs keeps this
@@ -3222,7 +3259,17 @@ void MainWindow::openLiveSession(const QString& location) {
         // RasterLayer::autoStretch()'s doc comment. Re-run it once real
         // pixel data has actually landed (Milestone-1 servers are one-shot,
         // so "finished" == "all tiles received").
-        connect(session.get(), &LiveGeorefSession::finished, this, [this, findLiveLayer](int) {
+        //
+        // Qt::QueuedConnection: session emits `finished` from its background
+        // reader thread (see LiveRasterDataset::create()'s comment for why
+        // AutoConnection gets this wrong) -- without it, everything below
+        // (flushCache/buildOverviews/autoStretch/notifyLayerChanged, plus
+        // the progress dialog updates further down) runs off the GUI thread,
+        // which is the root cause behind "renders correctly only after a
+        // user-driven zoom" -- a zoom interaction is guaranteed to run on
+        // the GUI thread via the normal paint/input path, so it was the
+        // first time this logic ran somewhere Qt/GDAL actually expected it.
+        connect(session.get(), &LiveGeorefSession::finished, this, [this, findLiveLayer, progressDlg](int) {
             if (auto rl = findLiveLayer()) {
                 if (auto ds = rl->datasetPtr()) {
                     // MUST run before autoStretch()/invalidateStatsCache()
@@ -3235,6 +3282,7 @@ void MainWindow::openLiveSession(const QString& location) {
                     // the recompute below just re-reads the same stale
                     // cached blocks and still returns the degenerate result.
                     ds->flushCache();
+
                     // Give every zoom level a real pre-decimated source to
                     // read instead of relying on GDAL's slow generic
                     // resampling (+ its per-zoom-level stale-block-caching
@@ -3242,9 +3290,29 @@ void MainWindow::openLiveSession(const QString& location) {
                     // RasterDataset::buildOverviews()'s doc comment. Runs
                     // AFTER flushCache() so it builds from the real,
                     // now-current pixel data, not whatever was cached
-                    // during load.
-                    ds->buildOverviews(m_rpy_panel
-                        ? m_rpy_panel->overviewResampleMethod().toStdString() : "NEAREST");
+                    // during load. Not instant for a real multi-thousand-line
+                    // scene, so it's the second, determinate phase of the
+                    // SAME progress dialog the tile-receive phase used
+                    // (still application-modal -- the UI stays locked
+                    // through this phase too) -- same QApplication::
+                    // processEvents() pump PyramidBuilder::buildPyramids's
+                    // own progress callback already uses elsewhere in this
+                    // file, since this call blocks the GUI thread for its
+                    // duration and nothing else pumps the dialog's repaint.
+                    if (progressDlg) {
+                        progressDlg->setLabelText(tr("Building overviews..."));
+                        progressDlg->setRange(0, 100);
+                        progressDlg->setValue(0);
+                    }
+                    ds->buildOverviews(
+                        m_rpy_panel ? m_rpy_panel->overviewResampleMethod().toStdString() : "NEAREST",
+                        [progressDlg](double fraction) {
+                            if (progressDlg) {
+                                progressDlg->setValue(static_cast<int>(fraction * 100));
+                                QApplication::processEvents();
+                            }
+                            return !progressDlg || !progressDlg->wasCanceled();
+                        });
                     ds->invalidateStatsCache();
                 }
                 rl->autoStretch();
@@ -3252,7 +3320,8 @@ void MainWindow::openLiveSession(const QString& location) {
                     if (m_layer_mgr->layerAt(i) == rl) { m_layer_mgr->notifyLayerChanged(i); break; }
                 }
             }
-        });
+            if (progressDlg) progressDlg->close();
+        }, Qt::QueuedConnection);
 
         if (!m_rpy_panel) {
             m_rpy_panel = new RpyControlPanel(this);
@@ -3287,7 +3356,8 @@ void MainWindow::openLiveSession(const QString& location) {
         m_rpy_panel->raise();
         m_rpy_panel->activateWindow();
     }, Qt::SingleShotConnection);
-    connect(liveDs.get(), &LiveRasterDataset::sessionError, this, [this](QString msg) {
+    connect(liveDs.get(), &LiveRasterDataset::sessionError, this, [this, progressDlg](QString msg) {
+        if (progressDlg) progressDlg->close();
         QMessageBox::warning(this, tr("Live Session Error"), msg);
     });
 }

@@ -12,9 +12,23 @@
 
 std::shared_ptr<LiveRasterDataset> LiveRasterDataset::create(std::shared_ptr<LiveGeorefSession> session) {
     std::shared_ptr<LiveRasterDataset> self(new LiveRasterDataset(std::move(session)));
-    connect(self->m_session.get(), &LiveGeorefSession::started, self.get(), &LiveRasterDataset::onStarted);
-    connect(self->m_session.get(), &LiveGeorefSession::tileReceived, self.get(), &LiveRasterDataset::onTileReceived);
-    connect(self->m_session.get(), &LiveGeorefSession::errorOccurred, self.get(), &LiveRasterDataset::sessionError);
+    // Qt::QueuedConnection explicitly, NOT AutoConnection: LiveGeorefSession
+    // emits from a raw std::thread (readLoop), never moved to a real
+    // QThread, so its QObject affinity is still whatever thread constructed
+    // it (the GUI thread) -- Qt's AutoConnection compares sender/receiver
+    // AFFINITY, not the calling thread, sees "same thread" here, and picks
+    // DirectConnection. Without this, onStarted/onTileReceived run
+    // SYNCHRONOUSLY on the background reader thread, touching GDAL/Qt
+    // objects outside their normal thread-safety assumptions -- see
+    // MainWindow::openLiveSession's matching fix for the full symptom this
+    // caused (rendering only working after a user-driven, correctly-
+    // main-thread zoom interaction).
+    connect(self->m_session.get(), &LiveGeorefSession::started,
+            self.get(), &LiveRasterDataset::onStarted, Qt::QueuedConnection);
+    connect(self->m_session.get(), &LiveGeorefSession::tileReceived,
+            self.get(), &LiveRasterDataset::onTileReceived, Qt::QueuedConnection);
+    connect(self->m_session.get(), &LiveGeorefSession::errorOccurred,
+            self.get(), &LiveRasterDataset::sessionError, Qt::QueuedConnection);
     return self;
 }
 

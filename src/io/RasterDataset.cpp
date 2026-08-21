@@ -587,16 +587,32 @@ void RasterDataset::flushCache() {
     m_ds->FlushCache(false);
 }
 
-bool RasterDataset::buildOverviews(const std::string& resampling) {
+namespace {
+struct RasterDatasetProgressCtx {
+    RasterDataset::ProgressFn fn;
+};
+
+int CPL_STDCALL rasterDatasetProgressBridge(double dfComplete, const char*, void* pArg) {
+    if (!pArg) return TRUE;
+    auto* ctx = static_cast<RasterDatasetProgressCtx*>(pArg);
+    if (!ctx->fn) return TRUE;
+    return ctx->fn(dfComplete) ? TRUE : FALSE;
+}
+}  // namespace
+
+bool RasterDataset::buildOverviews(const std::string& resampling, ProgressFn progressCb) {
     std::lock_guard lock(m_mutex);
     if (!m_ds) return false;
 
     auto levels = PyramidBuilder::computeOverviewLevels(m_width, m_height);
     if (levels.empty()) return true;  // small enough that no overviews are needed
 
+    RasterDatasetProgressCtx ctx{std::move(progressCb)};
     const CPLErr err = m_ds->BuildOverviews(
         resampling.c_str(), static_cast<int>(levels.size()), levels.data(),
-        0, nullptr, nullptr, nullptr);
+        0, nullptr,
+        ctx.fn ? rasterDatasetProgressBridge : nullptr,
+        ctx.fn ? &ctx : nullptr);
     if (err != CE_None) {
         FV_WARN("RasterDataset::buildOverviews failed for '{}' (err={})", m_path, static_cast<int>(err));
         return false;
