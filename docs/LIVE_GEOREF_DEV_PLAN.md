@@ -1,306 +1,225 @@
-# Live Arrow Flight Georeferencing — Handoff Dev/Test Plan
+# Live Arrow Flight Georeferencing — Architecture & Status
 
-Continuation of a dual-repo feature: trims-georef streams georeferenced
-tiles to FlashViewer over Apache Arrow Flight, live, with a control panel to
-adjust RPY attitude bias/rate and `GeoreferencerConfig` knobs (stride,
+A dual-repo feature: trims-georef streams georeferenced tiles to
+FlashViewer over Apache Arrow Flight, live, with a control panel to adjust
+RPY attitude bias/rate and `GeoreferencerConfig` knobs (stride,
 cell-seeding method, device, float precision, resample mode) and see the
-raster update. Full design/rationale: see the plan this branch was built
-from (`i-want-this-library-greedy-thunder` in the originating session) —
-this doc is the **practical continuation checklist**, not a re-derivation
-of that design.
+raster update as the server recomputes.
 
-Branches: `feature/live-arrow-flight` (trims-georef), this repo is on
-`feature/arrow-flight-live-georef`.
+Branches: `feature/live-arrow-flight` (trims-georef), `feature/arrow-flight-live-georef`
+(this repo). Both sides are implemented, built, and tested — this doc
+records the final architecture and the known rough edges, not a
+to-do list (see "History" at the bottom for how it got here).
 
-## Status: what's actually done vs. not
+## Status: implemented and tested end-to-end
 
-**trims-georef (Python) — implemented AND tested**, using a real venv
-(torch/numpy/pyarrow/pytest installed, `pip install -e .`), against
-in-process Arrow Flight gRPC server/client — not just unit logic:
+**trims-georef (Python)** — full test suite passing (869 passed, 10
+skipped GPU-only), plus live-specific tests in `trims/tests/test_live_arrow.py`
+and `trims/tests/test_streaming.py` covering a real in-process
+`TrimsFlightServer` + `pyarrow.flight.FlightClient` `DoExchange` round
+trip, cooperative cancellation, and streaming-vs-sequential output
+comparison:
 - `trims/live/arrow_tile_writer.py` — `ArrowTileWriter`: row-strip
   RecordBatch schema (one Arrow row = one output scanline,
-  `FixedSizeList<T>[W]` columns per band/line_src/sample_src/lat/lon/coverage).
-- `trims/live/flight_server.py` — `TrimsFlightServer`: Milestone-1 one-shot
-  `DoExchange` service. Sends a `start` message (H, W, band_ids,
-  geotransform, epsg) before tiles, then `tile` messages, then `done`.
-- `trims/live/session.py` — `LiveGeorefSession` (Python side): generation
-  counter + cooperative-cancellation token + `apply_config_update()` that
-  rebuilds `CorrectedSupportData` from RPY fields — **written but not yet
-  wired into `flight_server.py`'s `do_exchange` loop**. Milestone 1's
-  server is one-shot only; it does not yet read `config_update` messages
-  from the client mid-stream. That's the next Python-side task (see below).
+  `FixedSizeList<T>[W]`/`List<T>` columns per band/line_src/sample_src/lat/lon/coverage),
+  supporting both float32 and uint16 band dtypes.
+- `trims/live/flight_server.py` — `TrimsFlightServer.do_exchange`: fully
+  duplex. A `reader_worker` thread reads `config_update`/`request_extent`
+  messages concurrently with a `compute_worker` thread that runs (or
+  re-runs, on generation bump) `TileProcessor.run_streaming`, while the
+  main thread drains an outbound queue back to the client. Handles both a
+  one-shot static-output serve (`_get_output`) and a live, cancellable,
+  reconfigurable session (`_session`/`_input_fn`) in the same loop.
+- `trims/live/session.py` — `LiveGeorefSession`: generation counter +
+  cooperative-cancellation token (`make_abort_check`), `apply_config_update()`
+  rebuilding `CorrectedSupportData`/`GeoreferencerConfig` from RPY/knob
+  fields and remembering the last-applied values, `effective_config_payload()`
+  (for echoing current state to a client) and `cache_key()` (for the
+  server-side result cache, see below).
 - `trims/live/progress_bridge.py` — `FlightProgressBar`: duck-types
-  `trims.engine._progress`'s bar interface, forwards ticks to a callback
-  instead of stderr — **written but not yet threaded through
-  `TileProcessor.run_streaming`/`GeoreferencingEngine.run`'s actual
-  `_progress.make_bar`/`chunk_bar`/`tile_bar` call sites.** Those still
-  print to stderr; nothing calls `FlightProgressBar` yet.
-- `trims/engine/tile_processor.py` — `TileProcessor.run_streaming()` gained
-  real `should_abort` (checked once per tile + forwarded into each tile's
-  `GeoreferencingEngine.run`) and `tile_sink` (called with the same
-  `[bands,h,W]` chunks that get written to the GeoTIFF) parameters.
-  `StreamingResult` gained `aborted: bool`.
+  `trims.engine._progress`'s bar interface and forwards ticks as
+  `progress` app_metadata messages instead of printing to stderr; wired
+  into `flight_server.py`'s tile loop via `_progress.py`'s pluggable
+  progress-factory hook.
+- `trims/engine/tile_processor.py` — `TileProcessor.run_streaming()`: see
+  "Per-pixel tile ownership" below for the core algorithm. Also takes
+  `should_abort`/`tile_sink` for live cancellation and streaming output.
 - `trims/engine/georeferencing_engine.py` — `GeoreferencingEngine.run()`
-  gained `should_abort`, polled in the fused single-pass chunked
-  query+resample loop only (the path `TileProcessor` always takes for
-  tiles) — NOT in the two-pass/refinement or non-chunked paths. Raises the
-  new `AbortedError`.
-- Tests: `trims/tests/test_live_arrow.py` — 3 tests, all passing:
-  `ArrowTileWriter` round-trip, a real in-process `TrimsFlightServer` +
-  `pyarrow.flight.FlightClient` `DoExchange` round-trip matching
-  `GeoreferencingEngine.run()`'s in-memory output bit-for-bit (within
-  float32 tolerance), and `should_abort`/`tile_sink` cooperative
-  cancellation.
-- **Full regression check**: `trims/tests/` — 790 passed, 67 skipped
-  (GPU-only), 0 failed, run against the modified `tile_processor.py`/
-  `georeferencing_engine.py`. No existing behavior broke.
-- `pyproject.toml` — new `live` extra (`pyarrow>=14`).
+  takes `should_abort`, polled in the fused single-pass chunked
+  query+resample loop (the path `TileProcessor` always takes for tiles);
+  raises `AbortedError` on cancellation.
 
-**FlashViewer (C++) — written but UNCOMPILED and UNTESTED.** This
-environment has no `cmake`, no Qt6, no GDAL dev headers, and no Arrow C++
-— there was no way to build or run any of this here. Treat every C++ file
-below as a first draft that needs a real build to find its mistakes:
+**FlashViewer (C++)** — builds clean (`ninja FlashViewer flashviewer_tests`)
+and the full Catch2 suite passes (204 test cases, 4276/4276 assertions,
+15 intentionally skipped — the ones needing an external running server):
 - `src/live/LiveGeorefSession.hpp/.cpp` — Arrow Flight C++ client:
-  connects, does the handshake, runs a background reader thread decoding
-  `start`/`tile`/`progress`/`done` `app_metadata` JSON, re-emits as Qt
-  signals. Also `sendConfigUpdate()` for the client → server direction
-  (not yet consumed server-side, see above).
+  connects, handshakes, runs a background reader thread decoding
+  `start`/`scene_info`/`tile`/`progress`/`done` `app_metadata` JSON,
+  re-emits as `Qt::QueuedConnection` signals (the reader thread has GUI
+  affinity per `LiveRasterDataset::create()`'s doc comment, so
+  `AutoConnection` would pick the wrong connection type). Also
+  `sendConfigUpdate()` for the client → server direction, and
+  `disconnectFromServer()` which now actually calls the reader's
+  `Cancel()` (not just `DoneWriting()`) so the blocking `Next()` call
+  unblocks promptly on user-initiated disconnect.
 - `src/live/LiveRasterDataset.hpp/.cpp` — bridges arriving tiles into a
-  GDAL **MEM driver** dataset opened via the `MEM:::DATAPOINTER=...`
-  in-memory-buffer string syntax, then `RasterDataset::open(path)`
-  **unchanged** — so `RasterLayer`/the GL tile renderer need no changes.
-  Emits `regionUpdated(row0,row1)` per tile; no per-region GL invalidation
-  hook exists in `TileCache`/`LayerManager` today, so the intended wiring
-  is `LayerManager::notifyLayerChanged(index)` (whole-layer, coarser than
-  ideal — see Known Risks).
+  GDAL MEM driver dataset (`MEM:::DATAPOINTER=...`), unchanged by
+  `RasterDataset`/the GL tile renderer. Emits `regionUpdated(row0,row1)`
+  per tile.
+- `src/core/TileCache.hpp/.cpp`, `src/render/TileRenderer.*`,
+  `src/render/MapCanvas.*` — a `GpuTile::data_dirty` flag and
+  `markLayerDirty()` path let a live tile update force a re-decode of an
+  already-cached GPU tile without a full cache evict; `MainWindow`
+  throttles this to a 300ms timer per pane during live updates, and does
+  one full `invalidateLayer()` at the very end once overviews are
+  rebuilt.
 - `src/panels/RpyControlPanel.hpp/.cpp` — Qt control panel (RPY bias/rate/
   frame, stride, cell-locate method, use-local-cell-guess, resample mode,
-  device, three dtype combos, progress bar). Implements the two-tier
-  preview/full-resolution debounce (300ms) entirely client-side.
-- `cmake/Dependencies.cmake` — new Arrow/ArrowFlight `find_package` block
-  (`FV_ARROW_TARGETS`).
-- `src/CMakeLists.txt` — new files registered, `FV_ARROW_TARGETS` linked.
+  device, three dtype combos, progress bar, Live/Recompute mode toggle).
+  Debounces edits client-side and guards `sendUpdate()` against sending a
+  no-op `config_update` via a `m_last_sent` baseline; `applyRemoteConfig()`
+  restores all controls (under `QSignalBlocker`) from a server-echoed
+  `current_config` without re-triggering an update.
+- `src/app/MainWindow.cpp` — `openLiveSession()`: menu action ("Connect
+  Live Session…"), connects, creates the `LiveRasterDataset`/`RasterLayer`,
+  wires progress/region-update/error signals, opens `RpyControlPanel`.
+  Tears down and removes any existing live layer/session first, so
+  reconnecting doesn't leave stacked "Live Session" layers. Progress
+  dialog has a fixed max width with a word-wrapped label.
+- `src/main.cpp` — `qRegisterMetaType<LiveTile>()` /
+  `qRegisterMetaType<QVector<double>>()` registered at startup, required
+  for the cross-thread queued signal connections to deliver.
 
-**NOT done at all:**
-- MainWindow wiring. No menu action, no `DatasetFactory` entry point, no
-  member fields added to `MainWindow.hpp`/`.cpp`. See "Next task 1" below
-  for exactly what to add and where — deliberately left out rather than
-  hand-editing a 3000+ line file blind with no compiler to catch mistakes.
-- `qRegisterMetaType<LiveTile>()` / `qRegisterMetaType<QVector<double>>()`
-  — required once at startup (e.g. `main.cpp`) for the cross-thread queued
-  signal connections `LiveGeorefSession` emits from its reader thread to
-  actually deliver. Not yet added anywhere.
-- Server-side live `config_update` handling (Milestone 2 in the original
-  plan) — `TrimsFlightServer.do_exchange` still only serves one static
-  scene and returns; it does not loop reading further client messages,
-  rebuild `CorrectedSupportData`, or re-run `TileProcessor.run_streaming`.
-  `trims/live/session.py`'s `LiveGeorefSession` (Python) has the pieces
-  (`apply_config_update`, `make_abort_check`) but nothing calls them yet.
-- Any FlashViewer test (Catch2 or manual) — impossible without a build.
+## Core architecture: per-pixel tile ownership
 
-## Next tasks, in order
+The original design (row-range ownership: each output row belongs to
+exactly one tile) broke down on real sensor geometry. A pushbroom swath
+that's rotated relative to the output grid (the common case — track
+direction rarely aligns with north-up) has tile validity that varies by
+**column**, not just row: two tiles can both partially cover the same row
+range, each valid in a different span of columns. Row-range ownership
+either left gaps or produced a visible striped/comb pattern where
+adjacent tiles disagreed about who owned a row.
 
-1. **Wire `TrimsFlightServer.do_exchange` to loop on live config updates**
-   (`trims/live/flight_server.py`). After sending `start`, instead of just
-   sending all tiles once and returning: construct a
-   `trims.live.session.LiveGeorefSession`, spawn the tile-sending work
-   (initial full-res pass) so it runs against `should_abort=session.make_abort_check(generation)`
-   and `tile_sink=<writes an ArrowTileWriter batch to `writer`>`, and
-   concurrently keep calling `reader.read_chunk()` in a loop: on a
-   `config_update` message, call `session.apply_config_update(payload)`
-   (bumps generation, rebuilds `CorrectedSupportData`/`GeoreferencerConfig`),
-   cancel the in-flight `TileProcessor.run_streaming` call, and kick off a
-   new one with the new generation/config. This needs a background
-   thread or asyncio-style structure since `do_exchange` must read AND
-   write concurrently on one stream — the existing single-threaded
-   sequential loop in the current `do_exchange` won't do both at once.
-   Test analogously to `test_tile_processor_should_abort_and_tile_sink` in
-   `trims/tests/test_live_arrow.py`, but driving it through a real
-   `FlightClient` sending a `config_update` mid-stream and asserting the
-   tiles received after it reflect the new RPY bias (cross-check against
-   directly constructing `CorrectedSupportData` with the same bias and
-   comparing geometry, like `satellites/tests/test_ocm3.py` already does).
-2. **Thread `FlightProgressBar` through the actual progress call sites.**
-   `trims/engine/_progress.py`'s `tile_bar`/`chunk_bar`/`make_bar` need an
-   optional way to accept a caller-supplied bar factory (or
-   `TileProcessor`/`GeoreferencingEngine` need an `on_progress` callable
-   parameter that constructs a `trims.live.progress_bridge.FlightProgressBar`
-   instead of the default stderr bar) so a live session's tile loop reports
-   real progress over the wire instead of only stderr.
-3. **Get a build environment for FlashViewer** (this environment has none):
-   install cmake, Ninja, Qt6 (≥6.4, Core/Widgets/OpenGL/OpenGLWidgets/
-   Charts/Network/Svg), GDAL ≥3.8, muParser, spdlog, nlohmann-json, GLM,
-   Catch2, **and Arrow C++ with Flight enabled** (verify Flight
-   specifically — many distro Arrow packages ship without it). Then:
-   ```
-   cmake --preset macos-debug   # or linux-debug/windows-debug per docs/INSTALL.md
-   cmake --build build/macos-debug --parallel
-   ```
-   Expect real compile errors on first attempt — see "Known risks" below
-   for the specific spots most likely to need adjusting.
-4. **Fix whatever `LiveGeorefSession.cpp`'s Arrow Flight C++ calls need**
-   against the actually-installed Arrow version (see Known Risks #1).
-5. **Add the MainWindow entry point** (see exact instructions below).
-6. **Add `qRegisterMetaType` calls** in `main.cpp` before any live session
-   can be created.
-7. **Write `tests/test_live_session.cpp`** (Catch2, next to
-   `test_io_formats.cpp`): spin up a real `TrimsFlightServer` (Python,
-   via a test fixture that shells out `python -m trims.live...` or a
-   small pytest-side helper script) or, simpler for a first pass, a
-   trivial mock Arrow Flight C++ server, and assert `LiveRasterDataset`'s
-   MEM dataset reads back the same pixels a static `RasterDataset` opened
-   from an equivalent GeoTIFF would.
-8. **Manual end-to-end check**: run a Python script that builds a
-   `TrimsFlightServer` around one real georeferenced scene (mirroring
-   `notebooks/ocm_exercises/ocm3_georef.py`'s pipeline, per the original
-   plan's OCM-3-first note — though the live-session code itself was built
-   sensor-agnostic per the "generalize" scope decision), connect
-   FlashViewer's new live-session UI, and visually confirm the raster
-   renders and updates.
+`TileProcessor.run_streaming()` instead uses a full-scene accumulator
+(`accum_image`, `owner_dist`, `last_line_map`, `last_sample_map`,
+`last_latlon_map`, sized `[H_out, W_out]`) and per-pixel ownership: each
+tile's output is scored per-pixel by distance from the tile's along-track
+center line, and a pixel's owner is whichever processed tile had the
+closest center among the ones that produced a valid (non-nodata) value
+there. Later tiles can win pixels away from earlier ones and vice versa —
+there's no "first writer wins" or blend-at-the-seam step. Because the
+accumulator holds the whole scene, memory is no longer bounded by "one
+tile's worth of pixels" the way the original streaming design assumed;
+this was an explicit trade accepted for correctness after a row-based
+fix attempt was shown, via a real scene screenshot, to still produce
+gaps.
 
-### Next task 1 in detail: MainWindow wiring
+`run()` (the non-streaming, whole-scene path) is unaffected and still
+alpha-blends overlapping tiles — only `run_streaming()`'s ownership
+model changed.
 
-Mirror the existing "Open URL" action exactly
-(`src/app/MainWindow.cpp` ~line 793-809):
+### Resampling apron
 
-```cpp
-auto* actLiveSession = fileMenu->addAction(tr("Connect &Live Session…"));
-connect(actLiveSession, &QAction::triggered, this, [this] {
-    bool ok;
-    QString location = QInputDialog::getText(this, tr("Connect Live Georeferencing Session"),
-        tr("Enter Flight server address (grpc://host:port):"), QLineEdit::Normal,
-        QStringLiteral("grpc://localhost:8815"), &ok);
-    if (!ok || location.isEmpty()) return;
-    ErrorReporter::runGuarded("Connect Live Session", [&] { openLiveSession(location); });
-});
-```
+Resampling (`blackman_sinc_resample`, `F.grid_sample(padding_mode="border")`)
+needs neighbouring pixels beyond a tile's own row range to avoid
+border-clamp artifacts at tile edges. `TileProcessorConfig.resample_apron_lines`
+(default 8) controls how many extra rows of context each tile reads on
+each side purely to supply resampling neighbours — apron pixels are
+**never** claimed as owned output, only used as sampling context. This is
+independent of `overlap_lines` (which controls how much tiles overlap in
+their claimed output ranges, now largely a knob for redundancy/performance
+rather than correctness, since ownership is per-pixel regardless of
+overlap depth).
 
-Add `void openLiveSession(const QString& location);` as a new private
-method (declared in `MainWindow.hpp`, defined in `MainWindow.cpp`), plus
-member fields:
+## Server-side result caching and session-state echo
 
-```cpp
-// MainWindow.hpp, forward decls: class RpyControlPanel; class LiveRasterDataset;
-RpyControlPanel* m_rpy_panel{nullptr};
-std::unordered_map<uint64_t, std::shared_ptr<LiveRasterDataset>> m_live_sessions;  // keyed by RasterLayer::layerId()
-```
+- **Result cache**: once a live session finishes computing a scene, the
+  server keeps the completed raster in memory (`TrimsFlightServer._live_cache`,
+  process-lifetime only, one entry) keyed by `LiveGeorefSession.cache_key()`
+  — an exact-equality tuple of the engine config, last-applied RPY
+  bias/rate/frame, and requested bbox/resolution. A client that
+  reconnects (e.g. after a crash) with an unchanged config gets the
+  cached tiles replayed instantly via `_replay_cached_generation()`
+  instead of triggering a full recompute.
+- **Config echo**: `scene_info` now includes a `current_config` object
+  (`LiveGeorefSession.effective_config_payload()`) with the session's
+  current RPY bias/rate/frame, stride, cell-locate method, device, and
+  dtype/resample settings. On the FlashViewer side, `SceneInfo::currentConfig`
+  is parsed and applied to `RpyControlPanel` via `applyRemoteConfig()`
+  whenever a session is (re)opened — so a FlashViewer crash/restart
+  mid-session reconnects into the same control-panel state rather than
+  resetting to defaults.
 
-`openLiveSession()` body, mirroring `openFiles()`'s
-`auto layer = std::make_shared<RasterLayer>(sub_ds); ... m_layer_mgr->addLayer(layer);`
-pattern (`MainWindow.cpp` ~line 440-446):
+## Known risks / rough edges still worth watching
 
-```cpp
-void MainWindow::openLiveSession(const QString& location) {
-    auto session = std::make_shared<LiveGeorefSession>(location);
-    QString err;
-    if (!session->connectToServer(&err)) {
-        QMessageBox::warning(this, tr("Connection Failed"), err);
-        return;
-    }
-    auto liveDs = LiveRasterDataset::create(session);
-    connect(liveDs.get(), &LiveRasterDataset::ready, this, [this, liveDs] {
-        auto layer = std::make_shared<RasterLayer>(liveDs->dataset());
-        layer->setName(tr("Live Session"));
-        layer->setPaneId(kDefaultPaneId);   // or preparePaneForRasterLayer(...) if available for this ctor shape
-        m_layer_mgr->addLayer(layer);
-        m_live_sessions[layer->layerId()] = liveDs;
-        connect(liveDs.get(), &LiveRasterDataset::regionUpdated, this, [this, id = layer->layerId()](int, int) {
-            for (int i = 0; i < m_layer_mgr->count(); ++i)
-                if (auto l = m_layer_mgr->layerAt(i))
-                    if (auto rl = std::dynamic_pointer_cast<RasterLayer>(l); rl && rl->layerId() == id) {
-                        m_layer_mgr->notifyLayerChanged(i);
-                        break;
-                    }
-        });
-        if (!m_rpy_panel) {
-            m_rpy_panel = new RpyControlPanel(this);
-            fvApplyPlotWindowFlags(m_rpy_panel);   // same treatment as m_mtf_panel, see MainWindow.cpp:1746-1751
-        }
-        m_rpy_panel->setSession(session);
-        m_rpy_panel->show();
-    });
-    connect(liveDs.get(), &LiveRasterDataset::sessionError, this, [this](QString msg) {
-        QMessageBox::warning(this, tr("Live Session Error"), msg);
-    });
-    // Remove from m_live_sessions in a LayerManager::layerAboutToBeRemoved handler
-    // (already connected elsewhere for temp-file cleanup, FR-LYR-4) -- add a case
-    // for m_live_sessions.erase(layerId) there rather than a new connection, to
-    // keep the "what happens when a layer is removed" logic in one place.
-}
-```
-
-**This is unverified pseudocode-grade C++** (never compiled) — treat it as
-a strong starting point, not a drop-in patch. Check `preparePaneForRasterLayer`'s
-actual signature before using/skipping it, and check how the existing
-`layerAboutToBeRemoved` handler (search `MainWindow.cpp` for
-`layerAboutToBeRemoved`) is structured before adding a case to it.
-
-## Known risks / things most likely to break on first build
-
-1. **Arrow Flight C++ API version drift.** `LiveGeorefSession.cpp` uses
-   the classic `Status`-returning API
-   (`FlightClient::Connect(location, &client)` via `arrow::Result`,
-   `FlightClient::DoExchange(descriptor, &writer, &reader)`,
-   `FlightStreamReader::Next(&chunk)`). Some Arrow releases restructure
-   parts of this around `arrow::Result<>`-wrapped return values instead of
-   out-parameters. **First thing to check when this fails to compile.**
-2. **GDAL MEM driver open-string syntax.** `LiveRasterDataset.cpp` builds
-   a `MEM:::DATAPOINTER=<ptr>,PIXELS=...,LINES=...,BANDS=...,DATATYPE=Float32,
-   PIXELOFFSET=...,LINEOFFSET=...,BANDOFFSET=...` string and passes it to
-   `RasterDataset::open()` (→ `GDALOpenEx`). This is documented GDAL MEM
-   driver behavior but was **never exercised against a real GDAL build**
-   here — test it standalone (a tiny throwaway `main()` that builds a
-   small float buffer, opens it this way, and reads a pixel back with
-   `GDALRasterIO`) before debugging it through the full FlashViewer stack.
-3. **`RasterDataset::open()` failure mode is silent-ish.** It returns
-   `nullptr` on failure (per its existing contract) — `LiveRasterDataset`
-   logs a warning but the live session then has a `ready()` that never
-   fires; there's no user-facing error surfaced for "the MEM open itself
-   failed" distinct from "the Flight connection failed." Worth tightening
-   once the MEM-open path is verified to work at all.
-4. **Whole-layer invalidation, not per-region.** `regionUpdated(row0,row1)`
-   carries a real row range, but the wiring above collapses it to
-   `LayerManager::notifyLayerChanged(index)` (whole layer) because no
-   finer hook was found in `TileCache`. For a large raster with frequent
-   small tile updates this likely means visibly more redraw work than
-   necessary — profile before optimizing; don't assume it's a problem
-   without measuring on a real scene.
-5. **Concurrent MEM-buffer read/write.** `LiveRasterDataset::onTileReceived`
-   writes into the same `std::vector<float>` the render thread's
-   `GDALRasterIO` reads via the MEM dataset, guarded only by
-   `m_buffer_mutex` — but GDAL's read path does NOT take that mutex (it
-   can't, it doesn't know about it). This is a real data race by the
-   letter of the C++ memory model, even though in practice it can only
-   produce a stale-but-valid pixel value, never corrupt memory (buffer is
-   never reallocated after `onStarted`). Acceptable for a first pass;
-   flag to whoever reviews this before shipping anything performance- or
-   correctness-sensitive on it.
-6. **Server is one-shot (see "Next task 1").** Don't spend time debugging
-   `RpyControlPanel`'s slider behavior against a live server until task 1
-   is done — right now the server sends one scene and stops, so nothing
-   the panel sends will visibly change anything yet.
+1. **Concurrent MEM-buffer read/write.** `LiveRasterDataset::onTileReceived`
+   writes into the same buffer the render thread's `GDALRasterIO` reads
+   via the MEM dataset, guarded only by `m_buffer_mutex` — GDAL's read
+   path does not take that mutex. In practice this can only produce a
+   stale-but-valid pixel value (the buffer is never reallocated after
+   `onStarted`), never corrupt memory, but it's a real race by the letter
+   of the C++ memory model. Acceptable as shipped; flag before anything
+   performance- or correctness-sensitive is layered on top.
+2. **In-memory cache is single-entry and process-lifetime only.** A
+   second concurrent live session with a different config evicts the
+   only cache slot; a server restart loses it. Fine for the current
+   single-session-at-a-time usage pattern; revisit if multi-session or
+   persistent caching becomes a real requirement.
+3. **`resample_apron_lines` is a fixed default (8), not derived from the
+   actual resampling kernel's support radius.** `blackman_sinc_resample`'s
+   support happens to fit within 8 lines for the geometries tested; if
+   the kernel or its support radius changes, this constant should be
+   revisited alongside it.
+4. **`run_streaming()` vs `run()` no longer agree to tight tolerance.**
+   `run()` still alpha-blends overlaps; `run_streaming()` doesn't (hard
+   per-pixel ownership). `trims/tests/test_streaming.py` was relaxed to
+   statistical bounds (mean diff, fraction differing) rather than a tight
+   per-pixel tolerance — expected, not a bug, but worth remembering if
+   someone re-tightens that test without recalling why it was loosened.
 
 ## File map
 
 **trims-georef** (`feature/live-arrow-flight`):
 ```
-pyproject.toml                          # new `live` extra
-trims/live/__init__.py                  # new
-trims/live/arrow_tile_writer.py         # new
-trims/live/flight_server.py             # new
-trims/live/session.py                   # new
-trims/live/progress_bridge.py           # new
-trims/engine/tile_processor.py          # modified: should_abort, tile_sink, StreamingResult.aborted
-trims/engine/georeferencing_engine.py   # modified: should_abort, AbortedError
-trims/tests/test_live_arrow.py          # new, 3 tests, all passing
+pyproject.toml                          # `live` extra
+trims/live/__init__.py
+trims/live/arrow_tile_writer.py         # ArrowTileWriter (float32 + uint16)
+trims/live/flight_server.py             # TrimsFlightServer: full duplex do_exchange, caching
+trims/live/session.py                   # LiveGeorefSession: config apply/echo/cache_key
+trims/live/progress_bridge.py           # FlightProgressBar
+trims/engine/tile_processor.py          # per-pixel ownership + accumulator, resample apron
+trims/engine/georeferencing_engine.py   # should_abort, AbortedError
+trims/engine/_progress.py               # pluggable progress-factory hook
+trims/grid/forward_model_grid.py        # should_abort threading
+trims/tests/test_live_arrow.py
+trims/tests/test_streaming.py
 ```
 
 **FlashViewer** (`feature/arrow-flight-live-georef`):
 ```
 docs/LIVE_GEOREF_DEV_PLAN.md            # this file
-cmake/Dependencies.cmake                # modified: FV_ARROW_TARGETS
-src/CMakeLists.txt                      # modified: new files registered + linked
-src/live/LiveGeorefSession.hpp/.cpp     # new, UNCOMPILED
-src/live/LiveRasterDataset.hpp/.cpp     # new, UNCOMPILED
-src/panels/RpyControlPanel.hpp/.cpp     # new, UNCOMPILED
+cmake/Dependencies.cmake                # FV_ARROW_TARGETS
+src/CMakeLists.txt
+src/main.cpp                            # qRegisterMetaType<LiveTile>/<QVector<double>>
+src/live/LiveGeorefSession.hpp/.cpp     # Arrow Flight C++ client, config parsing
+src/live/LiveRasterDataset.hpp/.cpp     # GDAL MEM bridge
+src/panels/RpyControlPanel.hpp/.cpp     # control panel, remote-config restore
+src/app/MainWindow.cpp                  # openLiveSession, progress dialog, layer lifecycle
+src/core/TileCache.hpp/.cpp             # data_dirty / markLayerDirty
+src/render/TileRenderer.hpp/.cpp        # markLayerDirty forwarding
+src/render/MapCanvas.hpp/.cpp           # markLayerDirty (no-GL-context path)
+src/io/RasterDataset.hpp
+tests/test_live_session.cpp
 ```
+
+## History
+
+This doc originally tracked an in-progress handoff (Milestone 1 done,
+Milestone 2/build/MainWindow-wiring pending). All of that has since been
+completed, and a second round of fixes/design changes landed on top of it
+after real end-to-end testing surfaced problems the original design
+didn't anticipate — most significantly the row-based → per-pixel
+ownership rewrite, driven by real (rotated-swath) scene geometry showing
+gaps that synthetic test fixtures hadn't caught. See the two feature
+branches' commit history for the detailed sequence.
