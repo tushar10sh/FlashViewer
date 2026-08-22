@@ -108,9 +108,12 @@ std::vector<double> extractMapColumn(const std::shared_ptr<arrow::Array>& column
 }  // namespace
 
 LiveGeorefSession::LiveGeorefSession(QString location, QObject* parent)
-    : QObject(parent), m_location(std::move(location)) {}
+    : QObject(parent), m_location(std::move(location)) {
+    FV_INFO("LiveGeorefSession[{}]: constructed, location={}", (void*)this, m_location.toStdString());
+}
 
 LiveGeorefSession::~LiveGeorefSession() {
+    FV_INFO("LiveGeorefSession[{}]: destructing", (void*)this);
     disconnectFromServer();
 }
 
@@ -151,6 +154,9 @@ bool LiveGeorefSession::connectToServer(QString* errorOut) {
 
     m_connected.store(true);
     m_stop.store(false);
+    m_writer_stop.store(false);
+    m_writer_thread = std::thread(&LiveGeorefSession::writerLoop, this);
+    FV_INFO("LiveGeorefSession[{}]: connected, writer thread started", (void*)this);
     return true;
 }
 
@@ -158,11 +164,23 @@ bool LiveGeorefSession::startReading() {
     if (!m_connected.load() || m_reader_thread.joinable()) return false;
     m_stop.store(false);
     m_reader_thread = std::thread(&LiveGeorefSession::readLoop, this);
+    FV_INFO("LiveGeorefSession[{}]: reader thread started", (void*)this);
     return true;
 }
 
 void LiveGeorefSession::disconnectFromServer() {
+    FV_INFO("LiveGeorefSession[{}]: disconnectFromServer() called (connected={})", (void*)this, m_connected.load());
     m_stop.store(true);
+
+    // Stop and join the background writer thread BEFORE touching m_writer
+    // below -- writerLoop() also locks m_write_mutex to call
+    // WriteWithMetadata, so this must fully quiesce first to avoid it
+    // racing DoneWriting()/reset() on m_writer. Pending queued sends are
+    // drained (not dropped) by writerLoop() before it exits.
+    m_writer_stop.store(true);
+    m_writer_queue_cv.notify_all();
+    if (m_writer_thread.joinable()) m_writer_thread.join();
+
     {
         std::lock_guard<std::mutex> lock(m_write_mutex);
         if (m_writer) {
@@ -189,10 +207,57 @@ void LiveGeorefSession::disconnectFromServer() {
     m_reader.reset();
     m_client.reset();
     m_connected.store(false);
+    FV_INFO("LiveGeorefSession[{}]: disconnectFromServer() complete", (void*)this);
+}
+
+void LiveGeorefSession::enqueueWrite(std::string body) {
+    {
+        std::lock_guard<std::mutex> lock(m_writer_queue_mutex);
+        m_writer_queue.push_back(std::move(body));
+    }
+    m_writer_queue_cv.notify_one();
+}
+
+void LiveGeorefSession::writerLoop() {
+    FV_INFO("LiveGeorefSession[{}]: writerLoop() starting", (void*)this);
+    while (true) {
+        std::string body;
+        {
+            std::unique_lock<std::mutex> lock(m_writer_queue_mutex);
+            m_writer_queue_cv.wait(lock, [this] {
+                return m_writer_stop.load() || !m_writer_queue.empty();
+            });
+            if (m_writer_queue.empty()) {
+                if (m_writer_stop.load()) {
+                    FV_INFO("LiveGeorefSession[{}]: writerLoop() exiting (stop requested, queue empty)", (void*)this);
+                    return;
+                }
+                continue;
+            }
+            body = std::move(m_writer_queue.front());
+            m_writer_queue.pop_front();
+        }
+
+        FV_INFO("LiveGeorefSession[{}]: writerLoop() sending {} bytes: {}", (void*)this, body.size(), body);
+        auto metadata = arrow::Buffer::FromString(body);
+        std::lock_guard<std::mutex> lock(m_write_mutex);
+        if (!m_writer) {
+            FV_WARN("LiveGeorefSession[{}]: writerLoop() has no writer, dropping message", (void*)this);
+            continue;
+        }
+        auto status = m_writer->WriteWithMetadata(*dummyBatch(), metadata);
+        if (!status.ok()) {
+            FV_WARN("LiveGeorefSession[{}]: background write failed: {}", (void*)this, status.ToString());
+        } else {
+            FV_INFO("LiveGeorefSession[{}]: writerLoop() write succeeded", (void*)this);
+        }
+    }
 }
 
 int LiveGeorefSession::sendConfigUpdate(const LiveConfigUpdate& update) {
     const int generation = m_generation.fetch_add(1) + 1;
+    FV_INFO("LiveGeorefSession[{}]: sendConfigUpdate() generation={} preview={} connected={}",
+            (void*)this, generation, update.preview, m_connected.load());
 
     json payload = {
         {"type", "config_update"},
@@ -211,15 +276,7 @@ int LiveGeorefSession::sendConfigUpdate(const LiveConfigUpdate& update) {
         {"dtype_maps", update.dtypeMaps.toStdString()},
         {"resample_mode", update.resampleMode.toStdString()},
     };
-    const std::string body = payload.dump();
-    auto metadata = arrow::Buffer::FromString(body);
-
-    std::lock_guard<std::mutex> lock(m_write_mutex);
-    if (!m_writer) return generation;
-    auto status = m_writer->WriteWithMetadata(*dummyBatch(), metadata);
-    if (!status.ok()) {
-        FV_WARN("LiveGeorefSession::sendConfigUpdate write failed: {}", status.ToString());
-    }
+    enqueueWrite(payload.dump());
     return generation;
 }
 
@@ -235,22 +292,17 @@ int LiveGeorefSession::sendExtentRequest(const QVector<double>& bbox, double res
     if (resolutionM > 0.0) {
         payload["resolution_m"] = resolutionM;
     }
-    const std::string body = payload.dump();
-    auto metadata = arrow::Buffer::FromString(body);
-
-    std::lock_guard<std::mutex> lock(m_write_mutex);
-    if (!m_writer) return generation;
-    auto status = m_writer->WriteWithMetadata(*dummyBatch(), metadata);
-    if (!status.ok()) {
-        FV_WARN("LiveGeorefSession::sendExtentRequest write failed: {}", status.ToString());
-    }
+    enqueueWrite(payload.dump());
     return generation;
 }
 
 void LiveGeorefSession::readLoop() {
+    FV_INFO("LiveGeorefSession[{}]: readLoop() starting", (void*)this);
     while (!m_stop.load()) {
         auto chunk_res = m_reader->Next();
         if (!chunk_res.ok()) {
+            FV_WARN("LiveGeorefSession[{}]: readLoop() Next() failed: {} (m_stop={})",
+                     (void*)this, chunk_res.status().ToString(), m_stop.load());
             // A deliberate disconnectFromServer() call sets m_stop and then
             // calls m_reader->Cancel() to unblock exactly this Next() call --
             // that's an expected, user-initiated stop, not a real session
@@ -264,7 +316,10 @@ void LiveGeorefSession::readLoop() {
         auto chunk = std::move(chunk_res).ValueUnsafe();
         // End of stream: Arrow signals this with a chunk carrying neither
         // data nor app_metadata.
-        if (chunk.data == nullptr && chunk.app_metadata == nullptr) break;
+        if (chunk.data == nullptr && chunk.app_metadata == nullptr) {
+            FV_INFO("LiveGeorefSession[{}]: readLoop() got end-of-stream marker", (void*)this);
+            break;
+        }
 
         json meta;
         if (chunk.app_metadata) {
@@ -425,4 +480,5 @@ void LiveGeorefSession::readLoop() {
             FV_WARN("LiveGeorefSession: dropping malformed app_metadata message: {}", e.what());
         }
     }
+    FV_INFO("LiveGeorefSession[{}]: readLoop() exiting", (void*)this);
 }

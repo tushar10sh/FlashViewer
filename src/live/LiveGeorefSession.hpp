@@ -6,8 +6,11 @@
 #include <QMetaType>
 
 #include <atomic>
+#include <condition_variable>
+#include <deque>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -159,10 +162,14 @@ public:
     int currentGeneration() const { return m_generation.load(); }
 
     // Bumps the generation counter, serializes `update` to a config_update
-    // app_metadata JSON message, and writes it on the shared DoExchange stream.
+    // app_metadata JSON message, and hands it to the background writer
+    // thread (see m_writer_thread) -- returns immediately without blocking
+    // on the network write, so a stalled/slow DoExchange write can never
+    // freeze the calling (GUI) thread.
     int sendConfigUpdate(const LiveConfigUpdate& update);
 
     // Requests georeferencing of a specific ROI bounding box and resolution.
+    // Same non-blocking hand-off as sendConfigUpdate().
     int sendExtentRequest(const QVector<double>& bbox, double resolutionM = 0.0);
 
 signals:
@@ -176,13 +183,24 @@ signals:
 
 private:
     void readLoop();
+    // Background writer thread body: drains m_writer_queue and performs the
+    // actual (blocking) WriteWithMetadata calls, so sendConfigUpdate() /
+    // sendExtentRequest() calls from the GUI thread never block on network
+    // I/O -- see those methods' doc comments for why this exists.
+    void writerLoop();
+    void enqueueWrite(std::string body);
 
     QString m_location;
     std::unique_ptr<arrow::flight::FlightClient> m_client;
     std::unique_ptr<arrow::flight::FlightStreamWriter> m_writer;
     std::unique_ptr<arrow::flight::FlightStreamReader> m_reader;
     std::thread m_reader_thread;
+    std::thread m_writer_thread;
     std::mutex m_write_mutex;
+    std::mutex m_writer_queue_mutex;
+    std::condition_variable m_writer_queue_cv;
+    std::deque<std::string> m_writer_queue;
+    std::atomic<bool> m_writer_stop{false};
     std::atomic<bool> m_connected{false};
     std::atomic<bool> m_stop{false};
     std::atomic<int> m_generation{0};

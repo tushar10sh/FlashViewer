@@ -3199,6 +3199,7 @@ void MainWindow::openLiveSession(const QString& location) {
                              err.isEmpty() ? tr("Could not connect to Flight server at %1").arg(location) : err);
         return;
     }
+    const int sessionNumber = ++m_live_session_counter;
 
     // Modal progress dialog for the whole connect->receive->post-process
     // pipeline, matching the existing "Building Pyramids"/runWithCancelDialog
@@ -3229,7 +3230,19 @@ void MainWindow::openLiveSession(const QString& location) {
     progressDlg->setWindowFlag(Qt::WindowStaysOnTopHint, true);
     progressDlg->setMinimumDuration(0);
     progressDlg->setValue(0);
-    connect(progressDlg.data(), &QProgressDialog::canceled, this, [session] {
+    // QProgressDialog::closeEvent() unconditionally emits canceled() --
+    // whether the user actually clicked Cancel/pressed Esc, or the dialog
+    // was just close()'d programmatically because the pipeline finished
+    // successfully (see the `finished` handler below, which does exactly
+    // that). Without this guard, that success-path close() was
+    // indistinguishable from a real Cancel click and silently tore down the
+    // just-completed live session (session->disconnectFromServer()) via
+    // this same connection, right after the first generation streamed in --
+    // leaving RpyControlPanel wired to a dead session for every subsequent
+    // control change with no error surfaced anywhere.
+    auto progressFinishedNormally = std::make_shared<bool>(false);
+    connect(progressDlg.data(), &QProgressDialog::canceled, this, [session, progressFinishedNormally] {
+        if (*progressFinishedNormally) return;
         session->disconnectFromServer();
     });
 
@@ -3257,7 +3270,7 @@ void MainWindow::openLiveSession(const QString& location) {
     // fires once, so auto-disconnecting after that first (and only) firing
     // breaks the cycle instead of leaking the session (background reader
     // thread + gRPC connection included) for the rest of the process.
-    connect(liveDs.get(), &LiveRasterDataset::ready, this, [this, liveDs, session, progressDlg] {
+    connect(liveDs.get(), &LiveRasterDataset::ready, this, [this, liveDs, session, progressDlg, progressFinishedNormally, sessionNumber] {
         auto layer = std::make_shared<RasterLayer>(liveDs->dataset());
         if (liveDs->sceneInfo().rgbPreference.size() == 3) {
             const auto& pref = liveDs->sceneInfo().rgbPreference;
@@ -3275,7 +3288,7 @@ void MainWindow::openLiveSession(const QString& location) {
                 layer->setStretch(static_cast<float>(h0.minVal), static_cast<float>(h0.maxVal));
             }
         }
-        layer->setName(tr("Live Session"));
+        layer->setName(tr("Live Session %1").arg(sessionNumber));
         layer->setPaneId(preparePaneForRasterLayer(liveDs->dataset(), layer->name()));
         const uint64_t id = layer->layerId();
         m_layer_mgr->addLayer(layer);
@@ -3353,7 +3366,7 @@ void MainWindow::openLiveSession(const QString& location) {
             *liveRedrawPending = true;
         }, Qt::QueuedConnection);
 
-        connect(session.get(), &LiveGeorefSession::finished, this, [this, id, findLiveLayer, progressDlg, liveRedrawTimer](int) {
+        connect(session.get(), &LiveGeorefSession::finished, this, [this, id, findLiveLayer, progressDlg, liveRedrawTimer, progressFinishedNormally](int) {
             liveRedrawTimer->stop();
             if (auto rl = findLiveLayer()) {
                 if (auto ds = rl->datasetPtr()) {
@@ -3394,14 +3407,19 @@ void MainWindow::openLiveSession(const QString& location) {
                     }
                 }
             }
+            // Set BEFORE close() -- closeEvent() emits canceled() synchronously
+            // from within close() itself, so the canceled-handler's guard
+            // (see progressFinishedNormally's doc comment above) must already
+            // see true by the time that signal fires.
+            *progressFinishedNormally = true;
             if (progressDlg) progressDlg->close();
         }, Qt::QueuedConnection);
 
         if (!m_rpy_panel) {
             m_rpy_panel = new RpyControlPanel(this);
             fvApplyPlotWindowFlags(m_rpy_panel);
-            m_rpy_panel->setWindowTitle(tr("Live Georeferencing Control"));
             m_rpy_panel->resize(420, 540);
+            m_rpy_panel->setMaximumWidth(420);
             // Connected ONCE (the panel is created once and reused across
             // sessions) -- looks up m_rpy_active_layer_id at signal-fire
             // time rather than capturing this session's `id`/findLiveLayer,
@@ -3425,6 +3443,11 @@ void MainWindow::openLiveSession(const QString& location) {
                 }
             });
         }
+        // Set every time (not just on first creation) -- the panel is a
+        // single shared instance reused across reconnects (see its own
+        // comment above), so its title needs to track whichever session
+        // number is CURRENT, matching the "Live Session N" layer name.
+        m_rpy_panel->setWindowTitle(tr("Live Georeferencing Control — Session %1").arg(sessionNumber));
         m_rpy_panel->setSession(session);
         // Restore controls to whatever the server is actually running with
         // right now -- relevant on reconnect, where a PREVIOUS client may

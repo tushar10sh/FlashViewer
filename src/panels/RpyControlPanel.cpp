@@ -198,6 +198,13 @@ void RpyControlPanel::setupUi() {
     m_progress = new QProgressBar(this);
     m_progress->setRange(0, 100);
     m_status_label = new QLabel(tr("Not connected"), this);
+    // Progress stage text (see onProgressUpdated) can be a long single line
+    // (e.g. "Georef 9,424 lines -> 10270x8066 @ 24 m [cpu] L3840-4096 (ETA
+    // 12.3s)") -- without word-wrap, QLabel's sizeHint demands enough width
+    // to fit it on one line, which pushes the whole panel wider than its
+    // setMaximumWidth(420) cap (MainWindow::openLiveSession) since a
+    // top-level window's layout-driven minimum width can override that.
+    m_status_label->setWordWrap(true);
     root->addWidget(m_status_label);
     root->addWidget(m_progress);
     root->addStretch(1);

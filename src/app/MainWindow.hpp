@@ -303,6 +303,13 @@ private:
     // connections (made once, see openLiveSession) always affect whichever
     // session is current rather than a stale one.
     uint64_t               m_rpy_active_layer_id{0};
+    // Incremented on every openLiveSession() call (fresh connect OR
+    // reconnect) -- gives each live session a stable, human-visible number
+    // so the "Live Session N" layer name and RpyControlPanel's window title
+    // (both reused/replaced across reconnects, see openLiveSession's own
+    // comment on why only one is supported at a time) let the user tell
+    // which generation of session they're currently looking at.
+    int                     m_live_session_counter{0};
 
     /// Show, raise and focus a plot window, restoring its saved geometry the first time.
     void showPlotWindow(QWidget* w, const QString& key);
