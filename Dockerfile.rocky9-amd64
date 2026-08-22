@@ -51,28 +51,27 @@ RUN dnf install -y \
     xcb-util-wm \
     && dnf clean all
 
-# 3. Install Apache Arrow C++ with Flight (live Arrow Flight georeferencing
-# session -- see src/live/, docs/LIVE_GEOREF_DEV_PLAN.md) via the official
-# Apache Arrow Yum repo. Rocky 9 is ABI-compatible with the "almalinux/9"
-# repo tree Arrow publishes for RHEL-family distros; `rpm -E %{rhel}`
-# resolves to the major version (9) regardless of which rebuild this is.
-RUN dnf install -y "https://packages.apache.org/artifactory/arrow/almalinux/$(rpm -E %{rhel})/apache-arrow-release-latest.rpm" \
-    && dnf install -y --enablerepo=epel arrow-devel arrow-flight-devel \
-    && dnf clean all
-
-# 4. Build and install muParser from source
+# 3. Build and install muParser from source
 RUN git clone --depth 1 --branch v2.3.4 https://github.com/beltoforion/muparser.git /tmp/muparser \
     && cmake -B /tmp/muparser/build -S /tmp/muparser -G Ninja -DENABLE_SAMPLES=OFF -DENABLE_OPENMP=OFF -DCMAKE_BUILD_TYPE=Release \
     && cmake --build /tmp/muparser/build \
     && cmake --install /tmp/muparser/build \
     && rm -rf /tmp/muparser
 
-# 5. Build and install full GDAL with GeoTIFF, NetCDF, HDF5, JPEG, PNG, etc.
+# 4. Build and install full GDAL with GeoTIFF, NetCDF, HDF5, JPEG, PNG, etc.
+# GDAL_USE_ARROW=OFF is explicit (not just "don't install Arrow yet"): GDAL's
+# optional Arrow/Feather OGR driver needs a C++20 stdlib (std::popcount,
+# std::has_single_bit) that this build doesn't enable, so if Arrow headers
+# are ever visible here (e.g. step ordering changes) GDAL must not try to
+# build against them -- unrelated to FlashViewer's own Arrow Flight usage,
+# which links Arrow directly (Stage 2's cmake build), not through GDAL.
 RUN curl -sL https://github.com/OSGeo/gdal/releases/download/v3.8.5/gdal-3.8.5.tar.gz | tar -xz -C /tmp \
     && cmake -B /tmp/gdal-3.8.5/build -S /tmp/gdal-3.8.5 -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
         -DGDAL_BUILD_OPTIONAL_DRIVERS=ON \
         -DOGR_BUILD_OPTIONAL_DRIVERS=ON \
+        -DGDAL_USE_ARROW=OFF \
+        -DGDAL_USE_PARQUET=OFF \
         -DBUILD_TESTING=OFF \
         -DBUILD_PYTHON_BINDINGS=OFF \
     && cmake --build /tmp/gdal-3.8.5/build --parallel \
@@ -80,6 +79,17 @@ RUN curl -sL https://github.com/OSGeo/gdal/releases/download/v3.8.5/gdal-3.8.5.t
     && rm -rf /tmp/gdal-3.8.5 \
     && echo '/usr/local/lib64' > /etc/ld.so.conf.d/local.conf \
     && ldconfig
+
+# 5. Install Apache Arrow C++ with Flight (live Arrow Flight georeferencing
+# session -- see src/live/, docs/LIVE_GEOREF_DEV_PLAN.md) via the official
+# Apache Arrow Yum repo. Rocky 9 is ABI-compatible with the "almalinux/9"
+# repo tree Arrow publishes for RHEL-family distros; `rpm -E %{rhel}`
+# resolves to the major version (9) regardless of which rebuild this is.
+# Installed after GDAL (see step 4's comment) so GDAL's own build never
+# sees Arrow headers.
+RUN dnf install -y "https://packages.apache.org/artifactory/arrow/almalinux/$(rpm -E %{rhel})/apache-arrow-release-latest.rpm" \
+    && dnf install -y --enablerepo=epel arrow-devel arrow-flight-devel \
+    && dnf clean all
 
 WORKDIR /workspace
 
