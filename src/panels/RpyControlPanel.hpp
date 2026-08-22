@@ -2,30 +2,19 @@
 #include <QWidget>
 #include <QString>
 #include <memory>
+#include <optional>
+
+#include "live/LiveGeorefSession.hpp"   // LiveConfigUpdate is a value member below, not just a pointer
 
 class QDoubleSpinBox;
 class QComboBox;
 class QCheckBox;
 class QSlider;
 class QProgressBar;
+class QPushButton;
 class QLabel;
 class QTimer;
 
-class LiveGeorefSession;
-
-// Live control panel for one connected LiveGeorefSession: RPY bias/rate/
-// frame plus the practically-tunable GeoreferencerConfig subset (stride,
-// cell-seeding method, device, float precision, resample mode) named in the
-// plan doc's "UI scope" decision, and a progress bar bound to the session's
-// progressUpdated signal. Follows the same floating-tool-window pattern as
-// MtfToolPanel/SnrToolPanel (see MainWindow's m_mtf_panel/m_snr_panel) rather
-// than a QDockWidget -- created once, shown on demand once a live session
-// exists.
-//
-// Interaction model (two-tier preview/full-resolution, per the plan): every
-// control change sends a preview=true ConfigUpdate immediately for fast
-// coarse feedback, then restarts a 300ms debounce timer that sends the same
-// parameters with preview=false once the user stops adjusting.
 class RpyControlPanel : public QWidget {
     Q_OBJECT
 public:
@@ -35,30 +24,32 @@ public:
     // Panel is inert (controls disabled) until a session is attached.
     void setSession(std::shared_ptr<LiveGeorefSession> session);
 
-    // GDAL BuildOverviews algorithm name ("NEAREST" | "AVERAGE" | "GAUSS" |
-    // "CUBIC" | "CUBICSPLINE" | "LANCZOS" | "MODE"), queried once by
-    // MainWindow::openLiveSession's LiveGeorefSession::finished handler at
-    // the moment it calls RasterDataset::buildOverviews() -- purely
-    // client-side, never sent to the server, so (unlike the RPY/
-    // GeoreferencerConfig fields above) there's no live-rebuild on change:
-    // set your preference before the session finishes loading.
     QString overviewResampleMethod() const;
+    bool isLiveMode() const;
+    void setControlsLocked(bool locked);
+
+    // Initializes every control from a session's CURRENT effective config
+    // (see SceneInfo::currentConfig / LiveGeorefSession's scene_info
+    // handling) -- e.g. after (re)connecting to a server a previous client
+    // had already configured. Blocks each widget's own signals while
+    // setting values so this never itself triggers a config_update send
+    // (that would just redundantly re-tell the server what it already told
+    // us). `stride` is also applied, but note the server may have
+    // coarsened it for a `preview=true` in-flight update -- see
+    // LiveConfigUpdate::preview's doc comment -- so this can show a
+    // temporarily-inflated stride value until the next real (non-preview)
+    // update settles it back down.
+    void applyRemoteConfig(const LiveConfigUpdate& cfg);
 
 signals:
     void configChanged();   // emitted whenever a preview or full update is sent
-    // Purely client-side GL display resampling (RasterLayer::DisplayResampling
-    // -- "bilinear" | "bicubic2" | "bicubic4"), unlike overviewResampleMethod()
-    // this DOES apply live: MainWindow applies it to the active live layer
-    // immediately, no reload/rebuild needed, since it's a texture-sampling
-    // filter mode read at paint time, not a resample of stored data. This is
-    // "the app's resampling" that governs zoomed-in smoothing once GDAL has
-    // already picked the best-matching overview/native-res source for the
-    // current zoom (see RasterDataset::buildOverviews()'s doc comment).
     void displayResamplingChanged(QString method);
 
 private slots:
     void onAnyControlChanged();
     void onDebounceTimeout();
+    void onLiveModeToggled(bool live);
+    void onProcessClicked();
     void onProgressUpdated(int current, int total, QString stage, double etaS, int generation);
     void onSessionFinished(int generation);
 
@@ -68,6 +59,12 @@ private:
 
     std::shared_ptr<LiveGeorefSession> m_session;
     QTimer* m_debounce{nullptr};
+    // The last LiveConfigUpdate actually sent to m_session (see sendUpdate()'s
+    // no-op guard) -- unset (nullopt) until the first real send of a new session.
+    std::optional<LiveConfigUpdate> m_last_sent;
+
+    QCheckBox* m_live_mode_check{nullptr};
+    QPushButton* m_process_btn{nullptr};
 
     QDoubleSpinBox* m_roll_bias_deg{nullptr};
     QDoubleSpinBox* m_pitch_bias_deg{nullptr};

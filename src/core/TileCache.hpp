@@ -33,6 +33,15 @@ struct GpuTile {
     float       ch_hi[3]{1, 1, 1};
     std::atomic<bool> upload_ready{false};
     std::atomic<bool> refreshing{false};
+    // Set by TileCache::markLayerDirty() when the layer's underlying pixel
+    // data changed (not its band mapping) -- e.g. a live Arrow Flight
+    // session writing new rows into its MEM dataset. Checked by
+    // TileRenderer::ensureTile() alongside fvTileBandsStale() so a Ready
+    // tile schedules a background refresh instead of being treated as
+    // still-current; the OLD texture keeps drawing (same fallback the
+    // band-mismatch refresh path already uses) until the redecode lands,
+    // so a live tile's data updates without ever going blank/evicted.
+    std::atomic<bool> data_dirty{false};
 
     // What the in-flight decode worker actually read — written by the worker under
     // data_mutex, committed to grayscale/band_* by the uploader. Keeps the resident
@@ -63,6 +72,14 @@ public:
     void evict(QOpenGLFunctions_4_1_Core& gl, uint64_t active_frame = 0);
     void removeLayer(uint64_t layer_id, QOpenGLFunctions_4_1_Core& gl);
     void clear(QOpenGLFunctions_4_1_Core& gl);
+
+    // Flags every currently-resident tile of `layer_id` for a background
+    // redecode (see GpuTile::data_dirty) without touching any GPU texture --
+    // no GL context needed, unlike removeLayer(). Cheap and safe to call
+    // frequently (e.g. from a UI-thread timer) since it never blocks on or
+    // interferes with in-flight decode workers the way delete-then-recreate
+    // eviction would.
+    void markLayerDirty(uint64_t layer_id);
 
     int size() const;
     int capacity() const { return m_capacity; }

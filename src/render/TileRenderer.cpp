@@ -258,10 +258,16 @@ bool TileRenderer::ensureTile(QOpenGLFunctions_4_1_Core& gl,
         // Matching means the same MODE *and* the same source bands. Comparing only the
         // mode left a re-pick of the R/G/B triple (or of the gray band) drawing the
         // previously decoded bands until an RGB↔Gray round-trip forced a reload.
-        if (!fvTileBandsStale(*tile, layer->bandMapping())) return true;
+        // data_dirty (TileCache::markLayerDirty()) is the same "needs a refresh" signal
+        // for the OTHER reason a resident tile can go stale: the layer's underlying
+        // pixel bytes changed under it (a live Arrow Flight session writing new rows),
+        // not its band mapping.
+        const bool dirty = tile->data_dirty.load(std::memory_order_acquire);
+        if (!fvTileBandsStale(*tile, layer->bandMapping()) && !dirty) return true;
 
-        // Band selection mismatch — schedule a refresh worker (only once)
+        // Band selection mismatch or marked dirty — schedule a refresh worker (only once)
         if (!tile->refreshing.load(std::memory_order_acquire)) {
+            tile->data_dirty.store(false, std::memory_order_release);
             // SHARED ownership, not layer->dataset(): the worker outlives this call, and a
             // layer removed while its decode is in flight would otherwise destroy the
             // GDALDataset — and the mutex a worker may be blocked on — under that worker.

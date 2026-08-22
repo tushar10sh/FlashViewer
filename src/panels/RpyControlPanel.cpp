@@ -13,9 +13,13 @@
 #include <QLabel>
 #include <QTimer>
 
+#include <QPushButton>
+#include <QSignalBlocker>
+
 namespace {
 constexpr int kDebounceMs = 300;
 constexpr double kDeg2Rad = 0.017453292519943295;
+constexpr double kRad2Deg = 1.0 / kDeg2Rad;
 }
 
 RpyControlPanel::RpyControlPanel(QWidget* parent) : QWidget(parent) {
@@ -32,6 +36,21 @@ void RpyControlPanel::setupUi() {
 
     auto* root = new QVBoxLayout(this);
 
+    // --- Execution Mode -------------------------------------------------------
+    auto* modeGroup = new QGroupBox(tr("Execution Mode"), this);
+    auto* modeLayout = new QHBoxLayout(modeGroup);
+    m_live_mode_check = new QCheckBox(tr("Live Updates"), this);
+    m_live_mode_check->setChecked(true);
+    connect(m_live_mode_check, &QCheckBox::toggled, this, &RpyControlPanel::onLiveModeToggled);
+
+    m_process_btn = new QPushButton(tr("Process / Recompute"), this);
+    m_process_btn->setEnabled(false);
+    connect(m_process_btn, &QPushButton::clicked, this, &RpyControlPanel::onProcessClicked);
+
+    modeLayout->addWidget(m_live_mode_check);
+    modeLayout->addWidget(m_process_btn);
+    root->addWidget(modeGroup);
+
     // --- Attitude Correction ------------------------------------------------
     auto* attGroup = new QGroupBox(tr("Attitude Correction (RPY)"), this);
     auto* attForm = new QFormLayout(attGroup);
@@ -42,7 +61,7 @@ void RpyControlPanel::setupUi() {
         sb->setDecimals(4);
         sb->setSingleStep(0.001);
         sb->setSuffix(tr(" deg"));
-        connect(sb, &QDoubleSpinBox::valueChanged, this, &RpyControlPanel::onAnyControlChanged);
+        connect(sb, &QDoubleSpinBox::valueChanged, this, [this](double) { onAnyControlChanged(); });
         return sb;
     };
     m_roll_bias_deg = makeBiasSpin();
@@ -52,19 +71,13 @@ void RpyControlPanel::setupUi() {
     attForm->addRow(tr("Pitch bias"), m_pitch_bias_deg);
     attForm->addRow(tr("Yaw bias"), m_yaw_bias_deg);
 
-    // deg/s, not rad/s -- unified with the bias fields above (both degree-based
-    // on screen); converted to rad/s in sendUpdate() same as bias is converted
-    // to rad, since LiveConfigUpdate/GeoreferencerConfig.initial_rpy_rate_rad_per_s
-    // are radian-based on the wire either way. Range/step sized for typical
-    // real drift terms (order 1e-4 rad/s ~= 0.006 deg/s, per satellites/liss3
-    // attitude bias fits) while still allowing a much larger nudge.
     auto makeRateSpin = [this] {
         auto* sb = new QDoubleSpinBox(this);
         sb->setRange(-5.0, 5.0);
         sb->setDecimals(6);
         sb->setSingleStep(0.0001);
         sb->setSuffix(tr(" deg/s"));
-        connect(sb, &QDoubleSpinBox::valueChanged, this, &RpyControlPanel::onAnyControlChanged);
+        connect(sb, &QDoubleSpinBox::valueChanged, this, [this](double) { onAnyControlChanged(); });
         return sb;
     };
     m_roll_rate_deg = makeRateSpin();
@@ -78,12 +91,12 @@ void RpyControlPanel::setupUi() {
     m_t_ref->setRange(-1e9, 1e9);
     m_t_ref->setDecimals(3);
     m_t_ref->setSuffix(tr(" s (J2000)"));
-    connect(m_t_ref, &QDoubleSpinBox::valueChanged, this, &RpyControlPanel::onAnyControlChanged);
+    connect(m_t_ref, &QDoubleSpinBox::valueChanged, this, [this](double) { onAnyControlChanged(); });
     attForm->addRow(tr("Reference epoch"), m_t_ref);
 
     m_frame = new QComboBox(this);
     m_frame->addItems({QStringLiteral("hill"), QStringLiteral("body")});
-    connect(m_frame, &QComboBox::currentTextChanged, this, &RpyControlPanel::onAnyControlChanged);
+    connect(m_frame, &QComboBox::currentTextChanged, this, [this](const QString&) { onAnyControlChanged(); });
     attForm->addRow(tr("Correction frame"), m_frame);
 
     root->addWidget(attGroup);
@@ -108,11 +121,6 @@ void RpyControlPanel::setupUi() {
     geoForm->addRow(tr("Stride"), strideRow);
 
     m_cell_locate_method = new QComboBox(this);
-    // Full set from BicubicGridInterpolant::_local_cell_guess's dispatch
-    // (trims/grid/bicubic_interpolant.py) -- GeoreferencerConfig.cell_locate_method's
-    // own inline comment only lists the first three; poly_newton/poly_global/
-    // the stencil-walk and hash-grid variants are real, later-added methods
-    // that comment was never updated for.
     m_cell_locate_method->addItems({
         QStringLiteral("affine_index"),
         QStringLiteral("grid_walk"),
@@ -123,18 +131,18 @@ void RpyControlPanel::setupUi() {
         QStringLiteral("poly_newton"),
         QStringLiteral("poly_global"),
     });
-    connect(m_cell_locate_method, &QComboBox::currentTextChanged, this, &RpyControlPanel::onAnyControlChanged);
+    connect(m_cell_locate_method, &QComboBox::currentTextChanged, this, [this](const QString&) { onAnyControlChanged(); });
     geoForm->addRow(tr("Cell locate method"), m_cell_locate_method);
 
     m_use_local_cell_guess = new QCheckBox(tr("Use local cell guess"), this);
-    connect(m_use_local_cell_guess, &QCheckBox::toggled, this, &RpyControlPanel::onAnyControlChanged);
+    connect(m_use_local_cell_guess, &QCheckBox::toggled, this, [this](bool) { onAnyControlChanged(); });
     geoForm->addRow(m_use_local_cell_guess);
 
     m_resample_mode = new QComboBox(this);
     m_resample_mode->addItems({QStringLiteral("bilinear"), QStringLiteral("bicubic"),
                                 QStringLiteral("blackman_sinc")});
     m_resample_mode->setCurrentText(QStringLiteral("bicubic"));
-    connect(m_resample_mode, &QComboBox::currentTextChanged, this, &RpyControlPanel::onAnyControlChanged);
+    connect(m_resample_mode, &QComboBox::currentTextChanged, this, [this](const QString&) { onAnyControlChanged(); });
     geoForm->addRow(tr("Resample mode"), m_resample_mode);
 
     root->addWidget(geoGroup);
@@ -145,14 +153,14 @@ void RpyControlPanel::setupUi() {
 
     m_device = new QComboBox(this);
     m_device->addItems({QStringLiteral("cpu"), QStringLiteral("cuda")});
-    connect(m_device, &QComboBox::currentTextChanged, this, &RpyControlPanel::onAnyControlChanged);
+    connect(m_device, &QComboBox::currentTextChanged, this, [this](const QString&) { onAnyControlChanged(); });
     computeForm->addRow(tr("Device"), m_device);
 
     auto makeDtypeCombo = [this] {
         auto* cb = new QComboBox(this);
         cb->addItems({QStringLiteral("float32"), QStringLiteral("float64")});
         cb->setCurrentText(QStringLiteral("float64"));
-        connect(cb, &QComboBox::currentTextChanged, this, &RpyControlPanel::onAnyControlChanged);
+        connect(cb, &QComboBox::currentTextChanged, this, [this](const QString&) { onAnyControlChanged(); });
         return cb;
     };
     m_dtype_geo = makeDtypeCombo();
@@ -174,11 +182,6 @@ void RpyControlPanel::setupUi() {
                                     QStringLiteral("GAUSS"), QStringLiteral("CUBIC"),
                                     QStringLiteral("CUBICSPLINE"), QStringLiteral("LANCZOS"),
                                     QStringLiteral("MODE")});
-    // NEAREST default: preserves exact sensor DN in the in-memory pyramid
-    // rather than blending neighboring pixels -- matters for real,
-    // integer-quantized imagery (e.g. LISS-3's uint16 DN, see
-    // ArrowTileWriter's band_dtype) where you want to see the real value,
-    // not an averaged one, at zoomed-out overview levels.
     m_overview_resample->setCurrentText(QStringLiteral("NEAREST"));
     displayForm->addRow(tr("Overview resampling"), m_overview_resample);
 
@@ -202,6 +205,47 @@ void RpyControlPanel::setupUi() {
     setEnabled(false);   // inert until setSession() attaches a live session
 }
 
+bool RpyControlPanel::isLiveMode() const {
+    return m_live_mode_check ? m_live_mode_check->isChecked() : true;
+}
+
+void RpyControlPanel::onLiveModeToggled(bool live) {
+    if (m_process_btn) m_process_btn->setEnabled(!live);
+    if (live) {
+        onAnyControlChanged();
+    }
+}
+
+void RpyControlPanel::onProcessClicked() {
+    // Explicit user request to (re)run now -- bypass sendUpdate()'s no-op
+    // guard (unlike onAnyControlChanged()/onDebounceTimeout(), an identical
+    // resend here is deliberate, e.g. re-running after a Cancel).
+    m_last_sent.reset();
+    sendUpdate(/*preview=*/false);
+}
+
+void RpyControlPanel::setControlsLocked(bool locked) {
+    if (m_roll_bias_deg) m_roll_bias_deg->setEnabled(!locked);
+    if (m_pitch_bias_deg) m_pitch_bias_deg->setEnabled(!locked);
+    if (m_yaw_bias_deg) m_yaw_bias_deg->setEnabled(!locked);
+    if (m_roll_rate_deg) m_roll_rate_deg->setEnabled(!locked);
+    if (m_pitch_rate_deg) m_pitch_rate_deg->setEnabled(!locked);
+    if (m_yaw_rate_deg) m_yaw_rate_deg->setEnabled(!locked);
+    if (m_t_ref) m_t_ref->setEnabled(!locked);
+    if (m_frame) m_frame->setEnabled(!locked);
+    if (m_stride) m_stride->setEnabled(!locked);
+    if (m_cell_locate_method) m_cell_locate_method->setEnabled(!locked);
+    if (m_use_local_cell_guess) m_use_local_cell_guess->setEnabled(!locked);
+    if (m_resample_mode) m_resample_mode->setEnabled(!locked);
+    if (m_device) m_device->setEnabled(!locked);
+    if (m_dtype_geo) m_dtype_geo->setEnabled(!locked);
+    if (m_dtype_pixel) m_dtype_pixel->setEnabled(!locked);
+    if (m_dtype_maps) m_dtype_maps->setEnabled(!locked);
+    if (!isLiveMode() && m_process_btn) {
+        m_process_btn->setEnabled(!locked);
+    }
+}
+
 QString RpyControlPanel::overviewResampleMethod() const {
     return m_overview_resample ? m_overview_resample->currentText() : QStringLiteral("NEAREST");
 }
@@ -209,11 +253,8 @@ QString RpyControlPanel::overviewResampleMethod() const {
 void RpyControlPanel::setSession(std::shared_ptr<LiveGeorefSession> session) {
     m_session = std::move(session);
     setEnabled(m_session != nullptr);
+    m_last_sent.reset();   // a new session has no baseline yet -- see sendUpdate()'s guard
     if (!m_session) return;
-    // Qt::QueuedConnection: see LiveRasterDataset::create()'s comment --
-    // LiveGeorefSession emits from a background thread whose QObject
-    // affinity is still the GUI thread, so AutoConnection would otherwise
-    // pick DirectConnection and run these slots off the GUI thread.
     connect(m_session.get(), &LiveGeorefSession::progressUpdated,
             this, &RpyControlPanel::onProgressUpdated, Qt::QueuedConnection);
     connect(m_session.get(), &LiveGeorefSession::finished,
@@ -221,13 +262,59 @@ void RpyControlPanel::setSession(std::shared_ptr<LiveGeorefSession> session) {
     m_status_label->setText(tr("Connected"));
 }
 
+void RpyControlPanel::applyRemoteConfig(const LiveConfigUpdate& cfg) {
+    // Block each widget's OWN signal, not this whole QObject: onAnyControlChanged()
+    // is connected per-widget (see setupUi()), so a blanket QSignalBlocker on `this`
+    // wouldn't reach signals emitted BY the child widgets themselves.
+    const QSignalBlocker b1(m_roll_bias_deg);
+    const QSignalBlocker b2(m_pitch_bias_deg);
+    const QSignalBlocker b3(m_yaw_bias_deg);
+    const QSignalBlocker b4(m_roll_rate_deg);
+    const QSignalBlocker b5(m_pitch_rate_deg);
+    const QSignalBlocker b6(m_yaw_rate_deg);
+    const QSignalBlocker b7(m_t_ref);
+    const QSignalBlocker b8(m_frame);
+    const QSignalBlocker b9(m_stride);
+    const QSignalBlocker b10(m_cell_locate_method);
+    const QSignalBlocker b11(m_use_local_cell_guess);
+    const QSignalBlocker b12(m_resample_mode);
+    const QSignalBlocker b13(m_device);
+    const QSignalBlocker b14(m_dtype_geo);
+    const QSignalBlocker b15(m_dtype_pixel);
+    const QSignalBlocker b16(m_dtype_maps);
+
+    if (m_roll_bias_deg)  m_roll_bias_deg->setValue(cfg.rpyBiasRad[0] * kRad2Deg);
+    if (m_pitch_bias_deg) m_pitch_bias_deg->setValue(cfg.rpyBiasRad[1] * kRad2Deg);
+    if (m_yaw_bias_deg)   m_yaw_bias_deg->setValue(cfg.rpyBiasRad[2] * kRad2Deg);
+    if (m_roll_rate_deg)  m_roll_rate_deg->setValue(cfg.rpyRateRadPerS[0] * kRad2Deg);
+    if (m_pitch_rate_deg) m_pitch_rate_deg->setValue(cfg.rpyRateRadPerS[1] * kRad2Deg);
+    if (m_yaw_rate_deg)   m_yaw_rate_deg->setValue(cfg.rpyRateRadPerS[2] * kRad2Deg);
+    if (m_t_ref)          m_t_ref->setValue(cfg.rpyTRefS);
+    if (m_frame)          m_frame->setCurrentText(cfg.rpyFrame);
+
+    if (m_stride) {
+        m_stride->setValue(cfg.stride);
+        if (m_stride_label) m_stride_label->setText(QString::number(cfg.stride));
+    }
+    if (m_cell_locate_method)   m_cell_locate_method->setCurrentText(cfg.cellLocateMethod);
+    if (m_use_local_cell_guess) m_use_local_cell_guess->setChecked(cfg.useLocalCellGuess);
+    if (m_resample_mode)        m_resample_mode->setCurrentText(cfg.resampleMode);
+    if (m_device)      m_device->setCurrentText(cfg.device);
+    if (m_dtype_geo)   m_dtype_geo->setCurrentText(cfg.dtypeGeo);
+    if (m_dtype_pixel) m_dtype_pixel->setCurrentText(cfg.dtypePixel);
+    if (m_dtype_maps)  m_dtype_maps->setCurrentText(cfg.dtypeMaps);
+
+    // New baseline for sendUpdate()'s no-op guard, so the next real user
+    // interaction is compared against the server's actual current state
+    // rather than whatever this panel had before the restore.
+    m_last_sent = cfg;
+    m_last_sent->preview = false;
+}
+
 void RpyControlPanel::onAnyControlChanged() {
-    // Immediate coarse preview, then a debounced full-resolution recompute
-    // once the user stops adjusting -- the plan's two-tier interactivity
-    // design, implemented entirely client-side against one ConfigUpdate
-    // message shape (LiveGeorefSession::sendConfigUpdate).
+    if (!isLiveMode()) return;
     sendUpdate(/*preview=*/true);
-    if (m_debounce) m_debounce->start();   // restarts if already running
+    if (m_debounce) m_debounce->start();
 }
 
 void RpyControlPanel::onDebounceTimeout() {
@@ -257,6 +344,21 @@ void RpyControlPanel::sendUpdate(bool preview) {
     update.dtypeMaps = m_dtype_maps->currentText();
 
     update.preview = preview;
+
+    // Suppress a byte-for-byte-identical resend: sendConfigUpdate() always
+    // bumps the session generation, which aborts and restarts the ENTIRE
+    // scene's compute from scratch (see LiveGeorefSession::sendConfigUpdate /
+    // trims.live.session.LiveGeorefSession.apply_config_update) -- fine when
+    // the user actually changed something, but any spurious extra call to
+    // onAnyControlChanged() (a stray Qt signal from the panel, unrelated to
+    // an actual value change) would otherwise silently wipe and restart an
+    // already-streaming live session for no reason.
+    if (m_last_sent && *m_last_sent == update) return;
+    m_last_sent = update;
+
+    if (!preview) {
+        setControlsLocked(true);
+    }
     m_session->sendConfigUpdate(update);
     emit configChanged();
 }
@@ -272,6 +374,7 @@ void RpyControlPanel::onProgressUpdated(int current, int total, QString stage, d
 }
 
 void RpyControlPanel::onSessionFinished(int /*generation*/) {
+    setControlsLocked(false);
     m_status_label->setText(tr("Up to date"));
     m_progress->setValue(m_progress->maximum());
 }

@@ -4,55 +4,39 @@
 #include <QStringList>
 #include <QVector>
 
+#include "live/LiveGeorefSession.hpp"
+
 #include <memory>
 #include <mutex>
 #include <vector>
 
 class RasterDataset;
-class LiveGeorefSession;
-struct LiveTile;
 
 // Bridges a LiveGeorefSession's incoming Arrow tiles into a GDAL MEM-driver
 // RasterDataset, so the rest of FlashViewer's pipeline (RasterLayer, the GL
-// tile renderer, TileCache) needs NO changes -- the same "produce something
-// GDALOpenEx-openable" pattern BinaryRasterParser already uses (a synthesized
-// .vrt) rather than a new raster subtype. See the plan doc's "GDAL MEM driver
-// dataset" bridge design.
-//
-// Owns the pixel buffer the MEM dataset directly aliases (GDAL's MEM driver,
-// opened via the documented "MEM:::DATAPOINTER=..." in-memory-buffer syntax,
-// wraps caller memory without copying it) -- this object must outlive
-// dataset() and any RasterLayer built from it.
+// tile renderer, TileCache) needs NO changes.
 class LiveRasterDataset : public QObject {
     Q_OBJECT
 public:
-    // Connects `session` (must not already be connected) and returns a
-    // LiveRasterDataset that will allocate its pixel buffer and open the
-    // backing MEM dataset once the server's "start" message defines the
-    // raster shape. dataset() is null until ready() fires; check
-    // session->connectToServer()'s return value for immediate connection
-    // failure before relying on ready() firing at all.
     static std::shared_ptr<LiveRasterDataset> create(std::shared_ptr<LiveGeorefSession> session);
 
     ~LiveRasterDataset() override;
 
     std::shared_ptr<RasterDataset> dataset() const { return m_dataset; }
     std::shared_ptr<LiveGeorefSession> session() const { return m_session; }
+    const SceneInfo& sceneInfo() const { return m_sceneInfo; }
 
 signals:
     // Emitted once, after the MEM dataset is constructed and dataset() is
     // safe to wrap in a RasterLayer (e.g. via LayerManager::addLayer).
     void ready();
     // Emitted after every tile is written into the pixel buffer, with the
-    // affected output row range. There is no finer-than-layer invalidation
-    // hook in TileCache/LayerManager today (see LayerManager::notifyLayerChanged,
-    // index-granularity only) -- callers should connect this to
-    // notifyLayerChanged(index) for the layer this dataset backs, at least
-    // until/unless a per-region invalidation path is added to TileCache.
+    // affected output row range.
     void regionUpdated(int row0, int row1);
     void sessionError(QString message);
 
 private slots:
+    void onSceneInfoReceived(const SceneInfo& info);
     void onStarted(int H, int W, QStringList bandIds, QVector<double> geotransform, int epsg,
                     QString bandDtype, double nodataValue, int generation);
     void onTileReceived(LiveTile tile, int generation);
@@ -81,4 +65,5 @@ private:
     int m_H{0};
     int m_W{0};
     int m_generation{0};
+    SceneInfo m_sceneInfo;
 };

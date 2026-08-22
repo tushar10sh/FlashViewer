@@ -12,17 +12,8 @@
 
 std::shared_ptr<LiveRasterDataset> LiveRasterDataset::create(std::shared_ptr<LiveGeorefSession> session) {
     std::shared_ptr<LiveRasterDataset> self(new LiveRasterDataset(std::move(session)));
-    // Qt::QueuedConnection explicitly, NOT AutoConnection: LiveGeorefSession
-    // emits from a raw std::thread (readLoop), never moved to a real
-    // QThread, so its QObject affinity is still whatever thread constructed
-    // it (the GUI thread) -- Qt's AutoConnection compares sender/receiver
-    // AFFINITY, not the calling thread, sees "same thread" here, and picks
-    // DirectConnection. Without this, onStarted/onTileReceived run
-    // SYNCHRONOUSLY on the background reader thread, touching GDAL/Qt
-    // objects outside their normal thread-safety assumptions -- see
-    // MainWindow::openLiveSession's matching fix for the full symptom this
-    // caused (rendering only working after a user-driven, correctly-
-    // main-thread zoom interaction).
+    connect(self->m_session.get(), &LiveGeorefSession::sceneInfoReceived,
+            self.get(), &LiveRasterDataset::onSceneInfoReceived, Qt::QueuedConnection);
     connect(self->m_session.get(), &LiveGeorefSession::started,
             self.get(), &LiveRasterDataset::onStarted, Qt::QueuedConnection);
     connect(self->m_session.get(), &LiveGeorefSession::tileReceived,
@@ -37,22 +28,44 @@ LiveRasterDataset::LiveRasterDataset(std::shared_ptr<LiveGeorefSession> session)
 
 LiveRasterDataset::~LiveRasterDataset() = default;
 
+void LiveRasterDataset::onSceneInfoReceived(const SceneInfo& info) {
+    m_sceneInfo = info;
+    if (!m_dataset && info.H > 0 && info.W > 0 && !info.bandIds.isEmpty()) {
+        onStarted(info.H, info.W, info.bandIds, info.geotransform, info.epsg,
+                  info.bandDtype, info.nodataValue, 0);
+    }
+}
+
 void LiveRasterDataset::onStarted(int H, int W, QStringList bandIds, QVector<double> geotransform,
                                    int epsg, QString bandDtype, double nodataValue, int generation) {
     std::lock_guard<std::mutex> lock(m_buffer_mutex);
+
+    const size_t bands = static_cast<size_t>(bandIds.size());
+    const bool isU16 = (bandDtype == QStringLiteral("uint16"));
+
+    // If dataset already exists with matching dimensions/type, reuse buffer directly
+    if (m_dataset && m_H == H && m_W == W && m_bandDtype == bandDtype && m_bandIds == bandIds) {
+        std::lock_guard<std::mutex> ds_lock(m_dataset->mutex());
+        m_generation = generation;
+        if (isU16) {
+            std::fill(m_bufferU16.begin(), m_bufferU16.end(), static_cast<uint16_t>(nodataValue));
+        } else {
+            std::fill(m_buffer.begin(), m_buffer.end(), static_cast<float>(nodataValue));
+        }
+        return;
+    }
+
     m_H = H;
     m_W = W;
     m_bandIds = std::move(bandIds);
     m_bandDtype = std::move(bandDtype);
     m_generation = generation;
 
-    const size_t bands = static_cast<size_t>(m_bandIds.size());
     if (H <= 0 || W <= 0 || bands == 0) {
         FV_WARN("LiveRasterDataset: invalid raster shape {}x{}x{} from live session", bands, H, W);
         return;
     }
     const size_t nElems = bands * static_cast<size_t>(H) * static_cast<size_t>(W);
-    const bool isU16 = (m_bandDtype == QStringLiteral("uint16"));
 
     // GDAL's documented MEM driver in-memory-buffer open syntax: wraps
     // caller-owned memory (no copy) as a raster GDALOpenEx can open by
@@ -127,8 +140,11 @@ void LiveRasterDataset::onTileReceived(LiveTile tile, int generation) {
     if (generation != m_generation) return;  // stale generation -- see plan's cancellation design
 
     std::lock_guard<std::mutex> lock(m_buffer_mutex);
+    if (!m_dataset) return;
+    std::lock_guard<std::mutex> ds_lock(m_dataset->mutex());
+
     const int h = tile.row1 - tile.row0;
-    if (m_dataset == nullptr || h <= 0 || tile.width != m_W || tile.row1 > m_H) {
+    if (h <= 0 || tile.width != m_W || tile.row1 > m_H) {
         FV_WARN("LiveRasterDataset: dropping tile rows [{},{}) -- shape mismatch or not ready",
                 tile.row0, tile.row1);
         return;

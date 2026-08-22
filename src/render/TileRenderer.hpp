@@ -99,6 +99,8 @@ public:
 
     // Remove cached GPU tiles for a layer (call when layer is removed).
     void invalidateLayer(QOpenGLFunctions_4_1_Core& gl, uint64_t layer_id);
+    // See TileCache::markLayerDirty()'s doc comment -- no GL context needed.
+    void markLayerDirty(uint64_t layer_id) { m_cache.markLayerDirty(layer_id); }
 
     TileCache& tileCache() { return m_cache; }
 

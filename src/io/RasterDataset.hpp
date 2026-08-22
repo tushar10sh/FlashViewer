@@ -251,6 +251,9 @@ public:
     std::pair<float, float> computeStretchPercentile(
         int band_1based, double lo_pct, double hi_pct) const;
 
+    // Mutex protecting GDALDataset access (RasterIO, stats, etc.)
+    std::mutex& mutex() const { return m_mutex; }
+
 private:
     RasterDataset() = default;
 

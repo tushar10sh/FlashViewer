@@ -17,6 +17,18 @@ class FlightStreamWriter;
 class FlightStreamReader;
 }}
 
+#include <QPointF>
+
+struct BandHistogram {
+    double minVal{0.0};
+    double maxVal{1.0};
+    double meanVal{0.0};
+    double stdVal{1.0};
+    std::vector<int64_t> counts;
+    std::vector<double> binEdges;
+};
+Q_DECLARE_METATYPE(BandHistogram)
+
 // Per-axis RPY bias/rate + the GeoreferencerConfig subset a live session can
 // push to a trims-georef Arrow Flight server. Field names/units mirror
 // trims/live/session.py's LIVE_CONFIG_FIELDS and
@@ -42,7 +54,57 @@ struct LiveConfigUpdate {
     // RpyControlPanel sends preview=true immediately on every slider tick,
     // then a debounced preview=false once the slider settles.
     bool preview{false};
+
+    // Used by RpyControlPanel::sendUpdate() to suppress sending (and thereby
+    // bumping the session generation / restarting the whole scene's compute
+    // -- see LiveGeorefSession::sendConfigUpdate()) a config_update whose
+    // content is byte-for-byte identical to the last one actually sent. A
+    // spurious extra call to onAnyControlChanged() -- e.g. any incidental
+    // Qt signal fired by the control panel without the user actually
+    // changing a value -- would otherwise still restart a live session from
+    // scratch even though nothing meaningful changed.
+    bool operator==(const LiveConfigUpdate& o) const {
+        return rpyBiasRad[0] == o.rpyBiasRad[0] && rpyBiasRad[1] == o.rpyBiasRad[1] &&
+               rpyBiasRad[2] == o.rpyBiasRad[2] &&
+               rpyRateRadPerS[0] == o.rpyRateRadPerS[0] && rpyRateRadPerS[1] == o.rpyRateRadPerS[1] &&
+               rpyRateRadPerS[2] == o.rpyRateRadPerS[2] &&
+               rpyTRefS == o.rpyTRefS && rpyFrame == o.rpyFrame &&
+               stride == o.stride && cellLocateMethod == o.cellLocateMethod &&
+               useLocalCellGuess == o.useLocalCellGuess && device == o.device &&
+               dtypeGeo == o.dtypeGeo && dtypePixel == o.dtypePixel && dtypeMaps == o.dtypeMaps &&
+               resampleMode == o.resampleMode && preview == o.preview;
+    }
+    bool operator!=(const LiveConfigUpdate& o) const { return !(*this == o); }
 };
+
+struct SceneInfo {
+    QVector<QPointF> cornerLatLons;  // lon, lat
+    QVector<QPointF> cornerXY;       // east, north
+    QVector<double> bbox;           // [min_east, min_north, max_east, max_north]
+    int H{0};
+    int W{0};
+    double gsdM{10.0};
+    double baseResolutionM{10.0};
+    double minResolutionM{10.0};     // finest allowable sampling distance (m/px)
+    QStringList bandIds;
+    QVector<int> rgbPreference;
+    QVector<double> geotransform;
+    int epsg{0};
+    QString bandDtype{QStringLiteral("float32")};
+    double nodataValue{0.0};
+    std::vector<BandHistogram> histograms;
+    // The session's CURRENT effective RPY/config state (see
+    // trims.live.session.LiveGeorefSession.effective_config_payload's doc
+    // comment) -- present so a (re)connecting client can restore its
+    // controls to match what the server is actually running with, rather
+    // than showing defaults regardless of what a previous, now-disconnected
+    // client had configured. hasCurrentConfig is false only against an
+    // older server that doesn't send this field at all; currentConfig.preview
+    // is meaningless here (never set from the wire) and should be ignored.
+    bool hasCurrentConfig{false};
+    LiveConfigUpdate currentConfig;
+};
+Q_DECLARE_METATYPE(SceneInfo)
 
 // One tile's worth of georeferenced pixel + geolocation data, unpacked from
 // an Arrow RecordBatch matching trims.live.arrow_tile_writer.ArrowTileWriter's
@@ -79,23 +141,6 @@ Q_DECLARE_METATYPE(LiveTile)
 // reader thread that decodes incoming "start"/"tile"/"progress"/"done"
 // app_metadata JSON envelopes (see the plan's wire-protocol section) and
 // re-emits them as Qt signals.
-//
-// THREADING: signals are emitted from the reader thread, not the Qt UI
-// thread. Connect to them with Qt::QueuedConnection (the default for
-// signals crossing between QObjects that live in different threads, as
-// long as both have a running event loop) rather than assuming
-// direct/same-thread delivery. Call qRegisterMetaType<LiveTile>() and
-// qRegisterMetaType<QVector<double>>() once at startup (e.g. in main())
-// before connecting to `tileReceived`/`started` across threads.
-//
-// BUILD NOTE: written against the classic Status-returning Arrow Flight
-// C++ API (FlightClient::DoExchange(descriptor, &writer, &reader) and
-// FlightStreamReader::Next(&chunk)). This has been stable across many
-// Arrow releases, but some newer versions prefer arrow::Result<>-wrapped
-// equivalents -- check trims-georef's pinned pyarrow/arrow-cpp version
-// (cmake/Dependencies.cmake's new Arrow entry) against the installed
-// Arrow C++ headers on first build and adjust call sites if needed. This
-// file has not been compiled in the environment that authored it.
 class LiveGeorefSession : public QObject {
     Q_OBJECT
 public:
@@ -103,26 +148,25 @@ public:
     explicit LiveGeorefSession(QString location, QObject* parent = nullptr);
     ~LiveGeorefSession() override;
 
-    // Connects, sends the initial handshake message, and starts the
-    // background reader thread. Returns false (with *errorOut set) on
-    // immediate connection failure; asynchronous failures surface via
-    // errorOccurred().
+    // Connects and sends the initial handshake message.
+    // Call startReading() after setting up signal connections to begin
+    // the background reader thread without missing initial events.
     bool connectToServer(QString* errorOut = nullptr);
+    bool startReading();
     void disconnectFromServer();
 
     bool isConnected() const { return m_connected.load(); }
     int currentGeneration() const { return m_generation.load(); }
 
     // Bumps the generation counter, serializes `update` to a config_update
-    // app_metadata JSON message, and writes it on the shared DoExchange
-    // stream. Thread-safe (guarded by m_write_mutex) -- RpyControlPanel
-    // calls this from the Qt UI thread while the reader thread concurrently
-    // drains server -> client messages on the same logical stream (Arrow
-    // Flight DoExchange read/write directions are independent).
-    // Returns the new generation number.
+    // app_metadata JSON message, and writes it on the shared DoExchange stream.
     int sendConfigUpdate(const LiveConfigUpdate& update);
 
+    // Requests georeferencing of a specific ROI bounding box and resolution.
+    int sendExtentRequest(const QVector<double>& bbox, double resolutionM = 0.0);
+
 signals:
+    void sceneInfoReceived(const SceneInfo& info);
     void started(int H, int W, QStringList bandIds, QVector<double> geotransform, int epsg,
                  QString bandDtype, double nodataValue, int generation);
     void tileReceived(LiveTile tile, int generation);

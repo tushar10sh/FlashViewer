@@ -203,3 +203,56 @@ TEST_CASE("LiveConfigUpdate and RpyControlPanel integration", "[live][panel]") {
     emit session->progressUpdated(5, 10, QStringLiteral("Computing tiles"), 2.5, 1);
     emit session->finished(1);
 }
+
+TEST_CASE("LiveRasterDataset initializes from SceneInfo", "[live][scene_info]") {
+    auto session = std::make_shared<LiveGeorefSession>(QStringLiteral("grpc://127.0.0.1:8815"));
+    auto liveDs = LiveRasterDataset::create(session);
+
+    REQUIRE(liveDs->dataset() == nullptr);
+
+    bool readyFired = false;
+    QObject::connect(liveDs.get(), &LiveRasterDataset::ready, [&] {
+        readyFired = true;
+    });
+
+    SceneInfo info;
+    info.H = 48;
+    info.W = 96;
+    info.gsdM = 15.0;
+    info.epsg = 32643;
+    info.bandIds = {QStringLiteral("B1"), QStringLiteral("B2"), QStringLiteral("B3")};
+    info.rgbPreference = {2, 1, 0};
+    info.geotransform = {600000.0, 15.0, 0.0, 2500000.0, 0.0, -15.0};
+    info.bandDtype = QStringLiteral("float32");
+    info.nodataValue = -9999.0;
+    BandHistogram bh;
+    bh.minVal = 10.0;
+    bh.maxVal = 250.0;
+    info.histograms.push_back(bh);
+
+    emit session->sceneInfoReceived(info);
+    pumpEvents();
+
+    REQUIRE(readyFired);
+    REQUIRE(liveDs->dataset() != nullptr);
+    REQUIRE(liveDs->dataset()->width() == 96);
+    REQUIRE(liveDs->dataset()->height() == 48);
+    REQUIRE(liveDs->dataset()->bandCount() == 3);
+    REQUIRE(liveDs->sceneInfo().rgbPreference == QVector<int>({2, 1, 0}));
+}
+
+TEST_CASE("RpyControlPanel Live Mode toggle and control locking", "[live][panel][mode]") {
+    RpyControlPanel panel;
+    auto session = std::make_shared<LiveGeorefSession>(QStringLiteral("grpc://127.0.0.1:8815"));
+    panel.setSession(session);
+
+    REQUIRE(panel.isEnabled());
+    REQUIRE(panel.isLiveMode());
+
+    // Test locking controls
+    panel.setControlsLocked(true);
+    // Unlocking on finished signal
+    emit session->finished(1);
+    pumpEvents();
+}
+

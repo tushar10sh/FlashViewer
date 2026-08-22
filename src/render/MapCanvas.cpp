@@ -879,6 +879,12 @@ void MapCanvas::invalidateLayer(uint64_t layer_id) {
     update();
 }
 
+void MapCanvas::markLayerDirty(uint64_t layer_id) {
+    if (!m_gl_ready) return;
+    m_tile_renderer->markLayerDirty(layer_id);
+    update();
+}
+
 void MapCanvas::setCamera(const Camera& cam) {
     m_camera = cam;
     m_camera.setViewportSize(width(), height());

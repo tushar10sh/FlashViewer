@@ -78,6 +78,15 @@ void TileCache::removeLayer(uint64_t layer_id, QOpenGLFunctions_4_1_Core& gl) {
     }
 }
 
+void TileCache::markLayerDirty(uint64_t layer_id) {
+    std::lock_guard lock(m_mutex);
+    for (auto& [key, pair] : m_map) {
+        if (key.layer_id == layer_id) {
+            pair.first->data_dirty.store(true, std::memory_order_release);
+        }
+    }
+}
+
 void TileCache::clear(QOpenGLFunctions_4_1_Core& gl) {
     std::lock_guard lock(m_mutex);
     for (auto& [key, pair] : m_map)

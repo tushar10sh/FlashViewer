@@ -60,6 +60,11 @@ public:
 
     // Invalidate cached tiles for a layer (schedules re-decode on next render)
     void invalidateLayer(uint64_t layer_id);
+    // Schedules a background redecode of a layer's RESIDENT tiles without
+    // deleting them first -- see TileCache::markLayerDirty()'s doc comment.
+    // Unlike invalidateLayer(), needs no GL context (no textures touched
+    // directly), so callable from a plain timer without makeCurrent().
+    void markLayerDirty(uint64_t layer_id);
 
     // Camera access for sync
     void setCamera(const Camera& cam);

@@ -3164,6 +3164,34 @@ void MainWindow::openVectorFiles(const QStringList& paths, uint64_t targetPaneId
 }
 
 void MainWindow::openLiveSession(const QString& location) {
+    // Only one live session is supported at a time -- RpyControlPanel is a
+    // single shared instance, not one per session (see its own comment on
+    // m_rpy_active_layer_id: "always affects whichever live session is
+    // CURRENT"), so a second concurrent one would be uncontrollable through
+    // it anyway. Replace any existing live layer instead of stacking a new
+    // "Live Session" layer alongside it. Disconnect explicitly rather than
+    // relying on the shared_ptr's last reference dropping (and the
+    // destructor's own disconnectFromServer()) -- lambdas captured into
+    // still-live signal connections elsewhere (e.g. the progress-redraw
+    // timer) can keep that alive well past the layer's removal otherwise.
+    if (!m_live_sessions.empty()) {
+        std::vector<uint64_t> stale_ids;
+        for (auto& [id, liveDs] : m_live_sessions) {
+            stale_ids.push_back(id);
+            if (liveDs && liveDs->session()) liveDs->session()->disconnectFromServer();
+        }
+        for (uint64_t id : stale_ids) {
+            for (int i = 0; i < m_layer_mgr->count(); ++i) {
+                if (auto l = m_layer_mgr->layerAt(i)) {
+                    if (auto rl = std::dynamic_pointer_cast<RasterLayer>(l); rl && rl->layerId() == id) {
+                        m_layer_mgr->removeLayer(i);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
     auto session = std::make_shared<LiveGeorefSession>(location);
     QString err;
     if (!session->connectToServer(&err)) {
@@ -3182,29 +3210,43 @@ void MainWindow::openLiveSession(const QString& location) {
         tr("Waiting for scene metadata..."), tr("Cancel"), 0, 0, this);
     progressDlg->setAttribute(Qt::WA_DeleteOnClose);   // else close() only hides it, accumulating one per connect
     progressDlg->setWindowTitle(tr("Live Georeferencing Session"));
-    progressDlg->setWindowModality(Qt::ApplicationModal);
+    // Progress text includes the tile-processor's own stage description (e.g.
+    // "Georef 9,424 lines -> 10270x8066 @ 24 m [cpu] L3840-4096") plus an ETA
+    // suffix -- QProgressDialog's default label doesn't wrap, so a long stage
+    // string otherwise keeps stretching the dialog wider. A word-wrapping
+    // label with a capped width keeps the dialog a fixed, reasonable size.
+    auto* progressLabel = new QLabel(progressDlg);
+    progressLabel->setWordWrap(true);
+    progressLabel->setMaximumWidth(420);
+    progressDlg->setLabel(progressLabel);
+    progressDlg->setFixedWidth(460);
+    progressDlg->setWindowModality(Qt::NonModal);
+    // NonModal (so the RpyControlPanel stays usable alongside it) otherwise leaves
+    // it as just another top-level window -- the floating RpyControlPanel ("Live
+    // Georeferencing Control") can end up drawn over part of it with no
+    // programmatic z-order between two independent top-levels. Stay-on-top keeps
+    // it visible without going back to ApplicationModal (which would block the panel).
+    progressDlg->setWindowFlag(Qt::WindowStaysOnTopHint, true);
     progressDlg->setMinimumDuration(0);
     progressDlg->setValue(0);
     connect(progressDlg.data(), &QProgressDialog::canceled, this, [session] {
         session->disconnectFromServer();
     });
 
-    auto totalRows = std::make_shared<int>(0);
-    // Qt::QueuedConnection: see LiveRasterDataset::create()'s comment --
-    // session emits these from its background reader thread.
-    connect(session.get(), &LiveGeorefSession::started, this,
-            [progressDlg, totalRows](int H, int, QStringList, QVector<double>, int, QString, double) {
+    connect(session.get(), &LiveGeorefSession::progressUpdated, this,
+            [progressDlg](int current, int total, QString stage, double etaS, int) {
         if (!progressDlg) return;
-        *totalRows = H;
-        progressDlg->setLabelText(tr("Receiving tiles... (0 / %1 rows)").arg(H));
-        progressDlg->setRange(0, H);
-        progressDlg->setValue(0);
-    }, Qt::QueuedConnection);
-    connect(session.get(), &LiveGeorefSession::tileReceived, this,
-            [progressDlg, totalRows](LiveTile tile, int) {
-        if (!progressDlg) return;
-        progressDlg->setLabelText(tr("Receiving tiles... (%1 / %2 rows)").arg(tile.row1).arg(*totalRows));
-        progressDlg->setValue(tile.row1);
+        if (total > 0) {
+            progressDlg->setRange(0, total);
+            progressDlg->setValue(current);
+            QString label = stage;
+            if (etaS >= 0.0) {
+                label += tr(" (%1/%2, ETA %3s)").arg(current).arg(total).arg(etaS, 0, 'f', 1);
+            } else {
+                label += tr(" (%1/%2)").arg(current).arg(total);
+            }
+            progressDlg->setLabelText(label);
+        }
     }, Qt::QueuedConnection);
 
     auto liveDs = LiveRasterDataset::create(session);
@@ -3217,6 +3259,22 @@ void MainWindow::openLiveSession(const QString& location) {
     // thread + gRPC connection included) for the rest of the process.
     connect(liveDs.get(), &LiveRasterDataset::ready, this, [this, liveDs, session, progressDlg] {
         auto layer = std::make_shared<RasterLayer>(liveDs->dataset());
+        if (liveDs->sceneInfo().rgbPreference.size() == 3) {
+            const auto& pref = liveDs->sceneInfo().rgbPreference;
+            layer->setBandMapping(BandMapping::rgb(pref[0] + 1, pref[1] + 1, pref[2] + 1));
+        }
+        if (!liveDs->sceneInfo().histograms.empty()) {
+            for (int c = 0; c < std::min(3, (int)liveDs->sceneInfo().histograms.size()); ++c) {
+                const auto& h = liveDs->sceneInfo().histograms[c];
+                if (h.maxVal > h.minVal) {
+                    layer->setChannelStretch(c, static_cast<float>(h.minVal), static_cast<float>(h.maxVal));
+                }
+            }
+            const auto& h0 = liveDs->sceneInfo().histograms[0];
+            if (h0.maxVal > h0.minVal) {
+                layer->setStretch(static_cast<float>(h0.minVal), static_cast<float>(h0.maxVal));
+            }
+        }
         layer->setName(tr("Live Session"));
         layer->setPaneId(preparePaneForRasterLayer(liveDs->dataset(), layer->name()));
         const uint64_t id = layer->layerId();
@@ -3235,77 +3293,82 @@ void MainWindow::openLiveSession(const QString& location) {
             return nullptr;
         };
 
-        // Deliberately NOT wired to notifyLayerChanged during load: Milestone-1
-        // servers send the whole scene as one batch of tiles (see
-        // TrimsFlightServer.do_exchange), so redrawing on every regionUpdated
-        // (up to several dozen times per scene) buys no visible progressive-
-        // render benefit yet, but DOES race the still-in-flight background
-        // writes -- notifyLayerChanged kicks off an async decode/GL-upload
-        // that reads the MEM buffer via GDAL RasterIO, which takes no lock on
-        // m_buffer_mutex (GDAL has no idea it exists), against a buffer
-        // onTileReceived is concurrently memcpy-ing into. With ~dozens of
-        // overlapping invalidations firing across a load, different screen
-        // tiles' decodes land at different (arbitrary) snapshots of "how much
-        // has been written so far," and nothing forces a final consistent
-        // redraw once loading settles -- producing a lasting stale-vs-fresh
-        // banding pattern across the image (reported after connecting to a
-        // 9876-row real scene). Re-enable per-tile redraws only once there is
-        // a real progressive-preview use case (Milestone 2+) AND the MEM
-        // buffer has proper read/write synchronization to make it safe.
+        // Update display safely as tiles arrive. A plain update() alone only
+        // repaints whatever GL textures TileCache already has resident -- it
+        // does NOT re-decode/re-upload from the dataset's now-current bytes
+        // (see invalidateLayer's other call sites in this file, e.g. the
+        // layerDatasetChanged handler above), so without invalidateLayer()
+        // first, every tile after the first just redraws the same
+        // still-all-zero texture captured when the layer was added.
         //
-        // RasterLayer's constructor just ran autoStretch() against
-        // liveDs->dataset()'s still-all-zero buffer (no tile has arrived
-        // yet), so its stretch is the degenerate [0,1] fallback -- see
-        // RasterLayer::autoStretch()'s doc comment. Re-run it once real
-        // pixel data has actually landed (Milestone-1 servers are one-shot,
-        // so "finished" == "all tiles received").
+        // invalidateLayer() itself is the wrong tool for this, though:
+        // TileCache::removeLayer() synchronously DELETES the GPU textures
+        // for EVERY zoom level currently resident for this layer, across
+        // all panes, then relies on the next ensureTile() call to schedule
+        // a brand-new decode from TileState::Empty. A real scene streams in
+        // dozens of tiles, so calling it on every regionUpdated tick races
+        // that delete-then-redecode cycle against TileRenderer's own async
+        // decode workers: whichever decode happens to land before the NEXT
+        // eviction wins, everything else gets thrown away mid-flight before
+        // it can ever land -- this is what showed up as only the most
+        // recently-completed tile ever staying on screen, with everything
+        // decoded earlier wiped back to nothing on the next tick.
+        // markLayerDirty() (TileCache's, via MapCanvas) is the fix: it flags
+        // existing Ready tiles for a background refresh WITHOUT deleting
+        // them first, reusing the same "keep the old texture as a fallback
+        // until the redecode lands" path TileRenderer::ensureTile() already
+        // has for a band-mapping change (see GpuTile::data_dirty) -- so a
+        // tile's content only ever gets REPLACED once genuinely fresher
+        // data is ready, never blanked in between.
         //
-        // Qt::QueuedConnection: session emits `finished` from its background
-        // reader thread (see LiveRasterDataset::create()'s comment for why
-        // AutoConnection gets this wrong) -- without it, everything below
-        // (flushCache/buildOverviews/autoStretch/notifyLayerChanged, plus
-        // the progress dialog updates further down) runs off the GUI thread,
-        // which is the root cause behind "renders correctly only after a
-        // user-driven zoom" -- a zoom interaction is guaranteed to run on
-        // the GUI thread via the normal paint/input path, so it was the
-        // first time this logic ran somewhere Qt/GDAL actually expected it.
-        connect(session.get(), &LiveGeorefSession::finished, this, [this, findLiveLayer, progressDlg](int) {
+        // A dirty flag alone isn't enough either: the redecode it triggers
+        // calls ds->readWarpedRegion() -- but for a MEM-driver dataset with
+        // no overviews yet (built only once, in the `finished` handler
+        // below), every decimated read at any zoom falls through to GDAL's
+        // own generic block-cache-based resampling path, which serves back
+        // whatever it cached the FIRST time that zoom's block coordinates
+        // were read (often the all-zero buffer at layer-add time) -- see
+        // RasterDataset::buildOverviews()'s doc comment, "renders correctly
+        // at some zoom levels, blank/stale at others." onTileReceived's
+        // memcpy into the MEM buffer bypasses GDAL's I/O layer entirely, so
+        // GDAL has no way to know those bytes changed; flushCache() (same
+        // call the `finished` handler already makes once, at the end) is
+        // what actually drops that stale block cache, coalesced on the same
+        // periodic timer as the dirty-marking below.
+        auto liveRedrawPending = std::make_shared<bool>(false);
+        auto liveRedrawTimer = new QTimer(this);
+        liveRedrawTimer->setInterval(300);
+        connect(liveRedrawTimer, &QTimer::timeout, this, [this, id, liveDs, liveRedrawPending] {
+            if (!*liveRedrawPending) return;
+            *liveRedrawPending = false;
+            if (auto ds = liveDs->dataset()) ds->flushCache();
+            for (int i = 0; i < m_pane_layout->paneCount(); ++i) {
+                if (auto* c = m_pane_layout->paneCanvas(i)) {
+                    c->markLayerDirty(id);
+                }
+            }
+        });
+        liveRedrawTimer->start();
+        connect(liveDs.get(), &LiveRasterDataset::regionUpdated, this, [liveRedrawPending](int, int) {
+            *liveRedrawPending = true;
+        }, Qt::QueuedConnection);
+
+        connect(session.get(), &LiveGeorefSession::finished, this, [this, id, findLiveLayer, progressDlg, liveRedrawTimer](int) {
+            liveRedrawTimer->stop();
             if (auto rl = findLiveLayer()) {
                 if (auto ds = rl->datasetPtr()) {
-                    // MUST run before autoStretch()/invalidateStatsCache()
-                    // below: those only clear FlashViewer's OWN caches, not
-                    // GDAL's internal raster block cache, which still holds
-                    // whatever it cached from the all-zero buffer at layer-
-                    // add time (onTileReceived's writes bypass GDAL's I/O
-                    // layer entirely -- see RasterDataset::flushCache()'s
-                    // doc comment for the full mechanism). Without this,
-                    // the recompute below just re-reads the same stale
-                    // cached blocks and still returns the degenerate result.
                     ds->flushCache();
-
-                    // Give every zoom level a real pre-decimated source to
-                    // read instead of relying on GDAL's slow generic
-                    // resampling (+ its per-zoom-level stale-block-caching
-                    // failure mode) for coarse zooms -- see
-                    // RasterDataset::buildOverviews()'s doc comment. Runs
-                    // AFTER flushCache() so it builds from the real,
-                    // now-current pixel data, not whatever was cached
-                    // during load. Not instant for a real multi-thousand-line
-                    // scene, so it's the second, determinate phase of the
-                    // SAME progress dialog the tile-receive phase used
-                    // (still application-modal -- the UI stays locked
-                    // through this phase too) -- same QApplication::
-                    // processEvents() pump PyramidBuilder::buildPyramids's
-                    // own progress callback already uses elsewhere in this
-                    // file, since this call blocks the GUI thread for its
-                    // duration and nothing else pumps the dialog's repaint.
                     if (progressDlg) {
                         progressDlg->setLabelText(tr("Building overviews..."));
                         progressDlg->setRange(0, 100);
                         progressDlg->setValue(0);
                     }
+                    std::string resampleMethod = "NEAREST";
+                    if (m_rpy_panel) {
+                        resampleMethod = m_rpy_panel->overviewResampleMethod().toStdString();
+                    }
                     ds->buildOverviews(
-                        m_rpy_panel ? m_rpy_panel->overviewResampleMethod().toStdString() : "NEAREST",
+                        resampleMethod,
                         [progressDlg](double fraction) {
                             if (progressDlg) {
                                 progressDlg->setValue(static_cast<int>(fraction * 100));
@@ -3315,26 +3378,20 @@ void MainWindow::openLiveSession(const QString& location) {
                         });
                     ds->invalidateStatsCache();
                 }
-                rl->autoStretch();
                 for (int i = 0; i < m_layer_mgr->count(); ++i) {
                     if (m_layer_mgr->layerAt(i) == rl) { m_layer_mgr->notifyLayerChanged(i); break; }
                 }
-                // notifyLayerChanged() alone is NOT enough: MapCanvas's
-                // handler for LayerManager::layerChanged just calls
-                // update() (schedules a repaint of whatever GL textures
-                // TileCache already has resident) -- it does not force the
-                // GPU texture itself to be re-decoded/re-uploaded from the
-                // dataset's now-current bytes. Those textures were first
-                // decoded (and uploaded to the GPU) right when the layer
-                // was added, while the buffer was still all-zero, and
-                // nothing else evicts them -- explicitly invalidate every
-                // pane's copy for this layer, same call the existing
-                // layerAboutToBeRemoved handler already uses elsewhere in
-                // this file, so the next paint genuinely re-reads pixels
-                // instead of re-drawing the stale cached texture with (at
-                // best) a freshly remapped stretch.
+                // notifyLayerChanged() alone only schedules a repaint of
+                // whatever GL textures are already resident -- it does not
+                // force them to be re-decoded from the now-complete dataset
+                // (same reason the progressive regionUpdated handler above
+                // needs invalidateLayer(), not just update()), so the final
+                // frame after a full scene completes needs it too.
                 for (int i = 0; i < m_pane_layout->paneCount(); ++i) {
-                    if (auto* c = m_pane_layout->paneCanvas(i)) c->invalidateLayer(rl->layerId());
+                    if (auto* c = m_pane_layout->paneCanvas(i)) {
+                        c->invalidateLayer(id);
+                        c->update();
+                    }
                 }
             }
             if (progressDlg) progressDlg->close();
@@ -3369,6 +3426,14 @@ void MainWindow::openLiveSession(const QString& location) {
             });
         }
         m_rpy_panel->setSession(session);
+        // Restore controls to whatever the server is actually running with
+        // right now -- relevant on reconnect, where a PREVIOUS client may
+        // have already pushed RPY/config changes this panel's own (fresh)
+        // defaults wouldn't reflect. hasCurrentConfig is false only against
+        // an older server that doesn't send this field at all.
+        if (liveDs->sceneInfo().hasCurrentConfig) {
+            m_rpy_panel->applyRemoteConfig(liveDs->sceneInfo().currentConfig);
+        }
         m_rpy_panel->show();
         m_rpy_panel->raise();
         m_rpy_panel->activateWindow();
@@ -3377,6 +3442,9 @@ void MainWindow::openLiveSession(const QString& location) {
         if (progressDlg) progressDlg->close();
         QMessageBox::warning(this, tr("Live Session Error"), msg);
     });
+
+    // Start background reader thread now that all Qt signal connections are wired
+    session->startReading();
 }
 
 
