@@ -9,6 +9,11 @@
 #include <QEventLoop>
 #include <QTimer>
 #include <QUrl>
+#if QT_CONFIG(ssl)
+#include <QSslConfiguration>
+#include <QSslSocket>
+#include <QSslError>
+#endif
 
 bool OsmTileProvider::validateUrlTemplate(const QString& url, QString* errorReason)
 {
@@ -57,7 +62,19 @@ OsmConnectionResult OsmTileProvider::testConnection(const QString& url, int time
     req.setRawHeader("Accept", "image/png,image/*;q=0.9,*/*;q=0.5");
     req.setTransferTimeout(timeoutMs);
 
+#if QT_CONFIG(ssl)
+    QSslConfiguration sslConf = req.sslConfiguration();
+    sslConf.setPeerVerifyMode(QSslSocket::VerifyNone);
+    req.setSslConfiguration(sslConf);
+#endif
+
     QNetworkReply* reply = nam.get(req);
+#if QT_CONFIG(ssl)
+    reply->ignoreSslErrors();
+    QObject::connect(reply, &QNetworkReply::sslErrors, reply, [reply](const QList<QSslError>&) {
+        reply->ignoreSslErrors();
+    });
+#endif
 
     QEventLoop loop;
     QTimer timer;
@@ -145,7 +162,19 @@ QImage OsmTileProvider::requestTile(int z, int x, int y)
     req.setRawHeader("Accept", "image/png,image/*;q=0.9,*/*;q=0.5");
     req.setTransferTimeout(15000);
 
+#if QT_CONFIG(ssl)
+    QSslConfiguration sslConf = req.sslConfiguration();
+    sslConf.setPeerVerifyMode(QSslSocket::VerifyNone);
+    req.setSslConfiguration(sslConf);
+#endif
+
     QNetworkReply* reply = m_nam->get(req);
+#if QT_CONFIG(ssl)
+    reply->ignoreSslErrors();
+    connect(reply, &QNetworkReply::sslErrors, reply, [reply](const QList<QSslError>&) {
+        reply->ignoreSslErrors();
+    });
+#endif
     m_reply_keys[reply] = key;
     m_pending[key] = true;
     return {};
