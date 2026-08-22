@@ -51,14 +51,23 @@ RUN dnf install -y \
     xcb-util-wm \
     && dnf clean all
 
-# 3. Build and install muParser from source
+# 3. Install Apache Arrow C++ with Flight (live Arrow Flight georeferencing
+# session -- see src/live/, docs/LIVE_GEOREF_DEV_PLAN.md) via the official
+# Apache Arrow Yum repo. Rocky 9 is ABI-compatible with the "almalinux/9"
+# repo tree Arrow publishes for RHEL-family distros; `rpm -E %{rhel}`
+# resolves to the major version (9) regardless of which rebuild this is.
+RUN dnf install -y "https://packages.apache.org/artifactory/arrow/almalinux/$(rpm -E %{rhel})/apache-arrow-release-latest.rpm" \
+    && dnf install -y --enablerepo=epel arrow-devel arrow-flight-devel \
+    && dnf clean all
+
+# 4. Build and install muParser from source
 RUN git clone --depth 1 --branch v2.3.4 https://github.com/beltoforion/muparser.git /tmp/muparser \
     && cmake -B /tmp/muparser/build -S /tmp/muparser -G Ninja -DENABLE_SAMPLES=OFF -DENABLE_OPENMP=OFF -DCMAKE_BUILD_TYPE=Release \
     && cmake --build /tmp/muparser/build \
     && cmake --install /tmp/muparser/build \
     && rm -rf /tmp/muparser
 
-# 4. Build and install full GDAL with GeoTIFF, NetCDF, HDF5, JPEG, PNG, etc.
+# 5. Build and install full GDAL with GeoTIFF, NetCDF, HDF5, JPEG, PNG, etc.
 RUN curl -sL https://github.com/OSGeo/gdal/releases/download/v3.8.5/gdal-3.8.5.tar.gz | tar -xz -C /tmp \
     && cmake -B /tmp/gdal-3.8.5/build -S /tmp/gdal-3.8.5 -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
